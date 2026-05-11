@@ -1,0 +1,937 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#include "utils/file.hpp"
+
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <mutex>
+#include <ranges>
+#include <thread>
+#include <type_traits>
+#include <vector>
+
+#include "utils/exceptions.hpp"
+#include "utils/logging.hpp"
+
+namespace memgraph::utils {
+
+auto CreateUniqueDownloadFile(std::filesystem::path const &base_path)
+    -> std::pair<std::filesystem::path, FileUniquePtr> {
+  // w for writing
+  // b for binary
+  // x for exclusive access
+  constexpr auto file_mode = "wbx";
+
+  // Try without suffix
+  FileUniquePtr file(std::fopen(base_path.string().data(), file_mode), &std::fclose);
+
+  if (file) {
+    return std::make_pair(base_path, std::move(file));
+  }
+
+  auto const stem = base_path.stem();
+  auto const ext = base_path.extension();
+  auto const parent = base_path.parent_path();
+
+  auto suffix = 1;
+  // We don't want more than 10k files with the same name
+  constexpr auto max_suffix = 10'000;
+
+  std::filesystem::path new_path;
+
+  do {
+    new_path = parent / std::format("{}_{}{}", stem.string(), suffix, ext.string());
+    FileUniquePtr file(std::fopen(new_path.string().data(), file_mode), &std::fclose);
+    if (file) {
+      return std::make_pair(new_path, std::move(file));
+    }
+  } while (suffix++ < max_suffix);
+
+  throw utils::BasicException("More than 10k files with the same name. File {} won't be downloaded.",
+                              base_path.string());
+}
+
+std::filesystem::path GetExecutablePath() { return std::filesystem::read_symlink("/proc/self/exe"); }
+
+std::vector<std::string> ReadLines(const std::filesystem::path &path) noexcept {
+  std::vector<std::string> lines;
+
+  std::ifstream stream(path.c_str());
+  // We don't have to check the failed bit of the stream because `getline` won't
+  // read anything in that case and that is exactly the behavior that we want.
+  std::string line;
+  while (std::getline(stream, line)) {
+    lines.emplace_back(std::move(line));
+  }
+
+  return lines;
+}
+
+bool EnsureDir(const std::filesystem::path &dir) noexcept {
+  std::error_code error_code;  // For exception suppression.
+  if (std::filesystem::exists(dir, error_code)) return std::filesystem::is_directory(dir, error_code);
+  return std::filesystem::create_directories(dir, error_code);
+}
+
+void EnsureDirOrDie(const std::filesystem::path &dir) {
+  MG_ASSERT(EnsureDir(dir),
+            "Couldn't create directory '{}' due to a permission issue or the "
+            "path exists and isn't a directory!",
+            dir);
+}
+
+bool DirExists(const std::filesystem::path &dir) {
+  std::error_code error_code;  // For exception suppression.
+  return std::filesystem::is_directory(dir, error_code);
+}
+
+bool DeleteDir(const std::filesystem::path &dir) noexcept {
+  std::error_code error_code;  // For exception suppression.
+  if (!std::filesystem::is_directory(dir, error_code)) return false;
+  return std::filesystem::remove_all(dir, error_code) > 0;
+}
+
+auto GetFilesFromDir(std::filesystem::path const &dir) -> std::vector<std::filesystem::path> {
+  if (!utils::DirExists(dir)) {
+    spdlog::error("Directory {} doesn't exist", dir);
+    return {};
+  }
+  std::error_code error_code;
+  return std::filesystem::directory_iterator(dir, error_code) |
+         std::views::transform([](auto const &dir_entry) { return dir_entry.path(); }) |
+         std::views::filter([](std::filesystem::path const &path) { return path.filename() != ".old"; }) |
+         std::ranges::to<std::vector>();
+}
+
+bool DeleteFile(const std::filesystem::path &file) noexcept {
+  std::error_code error_code;  // For exception suppression.
+  auto const res = std::filesystem::remove(file, error_code);
+  if (!res) {
+    spdlog::error("Couldn't delete file {}. Error code message: {}", file.string(), error_code.message());
+  }
+  return res;
+}
+
+bool CopyFile(const std::filesystem::path &src, const std::filesystem::path &dst) noexcept {
+  std::error_code error_code;  // For exception suppression.
+  auto const res = std::filesystem::copy_file(src, dst, error_code);
+  if (!res) {
+    spdlog::error("Error code message: {}", error_code.message());
+  }
+  return res;
+}
+
+bool RenamePath(const std::filesystem::path &src, const std::filesystem::path &dst) {
+  std::error_code error_code;  // For exception suppression.
+  std::filesystem::rename(src, dst, error_code);
+  if (error_code) {
+    spdlog::error("Error code message: {}", error_code.message());
+  }
+  return !error_code;
+}
+
+bool HasReadAccess(const std::filesystem::path &path) { return access(path.c_str(), R_OK) == 0; }
+
+static_assert(std::is_same_v<off_t, ssize_t>, "off_t must fit into ssize_t!");
+
+InputFile::~InputFile() { Close(); }
+
+InputFile::InputFile(InputFile &&other) noexcept
+    : fd_(other.fd_),
+      path_(std::move(other.path_)),
+      file_size_(other.file_size_),
+      file_position_(other.file_position_),
+      buffer_(other.buffer_),
+      buffer_start_(other.buffer_start_),
+      buffer_size_(other.buffer_size_),
+      buffer_position_(other.buffer_position_) {
+  other.fd_ = -1;
+  other.file_size_ = 0;
+  other.file_position_ = 0;
+  other.buffer_start_ = std::nullopt;
+  other.buffer_size_ = 0;
+  other.buffer_position_ = 0;
+}
+
+InputFile &InputFile::operator=(InputFile &&other) noexcept {
+  Close();
+
+  fd_ = other.fd_;
+  path_ = std::move(other.path_);
+  file_size_ = other.file_size_;
+  file_position_ = other.file_position_;
+  buffer_ = other.buffer_;
+  buffer_start_ = other.buffer_start_;
+  buffer_size_ = other.buffer_size_;
+  buffer_position_ = other.buffer_position_;
+
+  other.fd_ = -1;
+  other.file_size_ = 0;
+  other.file_position_ = 0;
+  other.buffer_start_ = std::nullopt;
+  other.buffer_size_ = 0;
+  other.buffer_position_ = 0;
+
+  return *this;
+}
+
+bool InputFile::Open(const std::filesystem::path &path) {
+  if (IsOpen()) return false;
+
+  path_ = path;
+
+  while (true) {
+    fd_ = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd_ == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    }
+    // All other possible errors are fatal errors and are handled with the
+    // return value.
+    break;
+  }
+
+  if (fd_ == -1) return false;
+
+  // Get file size.
+  auto size = SetPosition(Position::RELATIVE_TO_END, 0);
+  if (!size || !SetPosition(Position::SET, 0)) {
+    Close();
+    return false;
+  }
+  file_size_ = *size;
+
+  return true;
+}
+
+bool InputFile::IsOpen() const { return fd_ != -1; }
+
+const std::filesystem::path &InputFile::path() const { return path_; }
+
+bool InputFile::Read(uint8_t *data, size_t size) {
+  uint8_t *write_ptr = data;
+  while (size != 0) {
+    auto buffer_left = buffer_size_ - buffer_position_;
+    if (buffer_left == 0) {
+      if (!LoadBuffer()) return false;
+      buffer_left = buffer_size_ - buffer_position_;
+    }
+    auto to_copy = std::min(size, buffer_left);
+    memcpy(write_ptr, buffer_.data() + buffer_position_, to_copy);
+    size -= to_copy;
+    write_ptr += to_copy;
+    buffer_position_ += to_copy;
+  }
+
+  return true;
+}
+
+bool InputFile::Peek(uint8_t *data, size_t size) {
+  auto old_buffer_start = buffer_start_;
+  auto old_buffer_position = buffer_position_;
+  auto real_position = GetPosition();
+
+  auto ret = Read(data, size);
+
+  if (buffer_start_ == old_buffer_start) {
+    // If we are still within the same buffer (eg. the `size` was small enough),
+    // we don't reset the buffer and just set the buffer position to the old
+    // buffer position.
+    buffer_position_ = old_buffer_position;
+  } else {
+    SetPosition(Position::SET, static_cast<ssize_t>(real_position));
+  }
+
+  return ret;
+}
+
+size_t InputFile::GetSize() const { return file_size_; }
+
+size_t InputFile::GetPosition() {
+  if (buffer_start_) return *buffer_start_ + buffer_position_;
+  return file_position_;
+}
+
+std::optional<size_t> InputFile::SetPosition(Position position, ssize_t offset) {
+  // It would be wrong not to take into account buffering
+  if (position == Position::RELATIVE_TO_CURRENT) {
+    offset = static_cast<ssize_t>(GetPosition()) + offset;
+    position = Position::SET;
+  }
+
+  // Optimization if the new position fits within the old buffer
+  if (position == Position::SET && buffer_start_.has_value()) {
+    auto target = static_cast<size_t>(offset);
+    if (target >= *buffer_start_ && target < *buffer_start_ + buffer_size_) {
+      buffer_position_ = target - *buffer_start_;
+      return target;
+    }
+  }
+
+  int whence = 0;
+  switch (position) {
+    case Position::SET:
+      whence = SEEK_SET;
+      break;
+    case Position::RELATIVE_TO_CURRENT:
+      whence = SEEK_CUR;
+      break;
+    case Position::RELATIVE_TO_END:
+      whence = SEEK_END;
+      break;
+  }
+  while (true) {
+    auto pos = lseek(fd_, offset, whence);
+    if (pos == -1 && errno == EINTR) {
+      continue;
+    }
+    if (pos < 0) return std::nullopt;
+    file_position_ = pos;
+
+    buffer_start_ = std::nullopt;
+    buffer_size_ = 0;
+    buffer_position_ = 0;
+    return pos;
+  }
+}
+
+void InputFile::Close() noexcept {
+  if (!IsOpen()) return;
+
+  int ret = 0;
+  while (true) {
+    ret = close(fd_);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    }
+    // All other possible errors are fatal errors and are handled in the
+    // MG_ASSERT below.
+    break;
+  }
+
+  if (ret != 0) {
+    spdlog::error("While trying to close {} an error occured: {} ({})", path_, strerror(errno), errno);
+  }
+
+  fd_ = -1;
+  path_ = "";
+}
+
+bool InputFile::LoadBuffer() {
+  buffer_start_ = std::nullopt;
+  buffer_size_ = 0;
+  buffer_position_ = 0;
+
+  size_t size = kFileBufferSize;
+  if (file_position_ + size >= file_size_) {
+    size = file_size_ - file_position_;
+  }
+  if (size == 0) return false;
+  buffer_size_ = size;
+
+  size_t offset = 0;
+  while (size > 0) {
+    auto got = read(fd_, buffer_.data() + offset, size);
+    if (got == -1 && errno == EINTR) {
+      continue;
+    }
+
+    if (got <= 0) {
+      return false;
+    }
+
+    size -= got;
+    offset += got;
+  }
+
+  buffer_start_ = file_position_;
+  file_position_ += buffer_size_;
+
+  return true;
+}
+
+OutputFile::~OutputFile() {
+  if (IsOpen()) Close();
+}
+
+OutputFile::OutputFile(OutputFile &&other) noexcept
+    : fd_(other.fd_),
+      buffer_position_(other.buffer_position_.load(std::memory_order_acquire)),
+      written_since_last_sync_(other.written_since_last_sync_),
+      buffer_(other.buffer_),
+      path_(std::move(other.path_)) {
+  other.fd_ = -1;
+  other.written_since_last_sync_ = 0;
+  other.buffer_position_.store(0, std::memory_order_release);
+}
+
+OutputFile &OutputFile::operator=(OutputFile &&other) noexcept {
+  if (IsOpen()) Close();
+
+  fd_ = other.fd_;
+  written_since_last_sync_ = other.written_since_last_sync_;
+  path_ = std::move(other.path_);
+  buffer_position_ = other.buffer_position_.load();
+  buffer_ = other.buffer_;
+
+  other.fd_ = -1;
+  other.written_since_last_sync_ = 0;
+  other.buffer_position_ = 0;
+
+  return *this;
+}
+
+bool OutputFile::Open(const std::filesystem::path &path, Mode mode) {
+  MG_ASSERT(!IsOpen(),
+            "While trying to open {} for writing the database"
+            " used a handle that already has {} opened in it!",
+            path,
+            path_);
+  path_ = path;
+  written_since_last_sync_ = 0;
+
+  int flags = O_WRONLY | O_CLOEXEC | O_CREAT;
+  if (mode == Mode::APPEND_TO_EXISTING) flags |= O_APPEND;
+
+  while (true) {
+    // The permissions are set to ((rw-r-----) & ~umask)
+    fd_ = open(path_.c_str(), flags, 0640);
+    if (fd_ == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    }
+    // All other possible errors are fatal errors and are handled in the
+    // MG_ASSERT below.
+    break;
+  }
+
+  auto const res = fd_ != -1;
+  if (!res) {
+    spdlog::error("While trying to open {} for writing an error occurred: {} ({})", path_, strerror(errno), errno);
+  }
+  return res;
+}
+
+bool OutputFile::IsOpen() const { return fd_ != -1; }
+
+const std::filesystem::path &OutputFile::path() const { return path_; }
+
+void OutputFile::Write(const uint8_t *data, size_t size) {
+  std::unique_lock flush_guard(flush_lock_);
+  MG_ASSERT(IsOpen(), "Trying to write to an unopened file!");
+  auto const buffer_start = buffer_position_.load(std::memory_order_acquire);
+
+  auto *write_ptr = buffer_.data() + buffer_start;
+  auto buffer_remaining = kFileBufferSize - buffer_start;
+  while (size > 0) {
+    if (buffer_remaining == 0) {
+      MG_ASSERT(IsOpen(), "Flushing an unopened file.");
+      FlushBufferInternal(kFileBufferSize);
+      buffer_remaining = kFileBufferSize;
+      write_ptr = buffer_.data();
+    }
+
+    auto const amount_to_write = std::min(size, buffer_remaining);
+    memcpy(write_ptr, data, amount_to_write);
+    size -= amount_to_write;
+    data += amount_to_write;
+    write_ptr += amount_to_write;
+    buffer_remaining -= amount_to_write;
+    written_since_last_sync_ += amount_to_write;
+  }
+  buffer_position_.store(write_ptr - buffer_.data(), std::memory_order_release);
+}
+
+void OutputFile::Write(const char *data, size_t size) { Write(reinterpret_cast<const uint8_t *>(data), size); }
+
+void OutputFile::Write(const std::string_view data) { Write(data.data(), data.size()); }
+
+size_t OutputFile::SeekFile(const Position position, const ssize_t offset) {
+  int whence = 0;
+  switch (position) {
+    case Position::SET:
+      whence = SEEK_SET;
+      break;
+    case Position::RELATIVE_TO_CURRENT:
+      whence = SEEK_CUR;
+      break;
+    case Position::RELATIVE_TO_END:
+      whence = SEEK_END;
+      break;
+  }
+  while (true) {
+    auto pos = lseek(fd_, offset, whence);
+    if (pos == -1 && errno == EINTR) {
+      continue;
+    }
+    MG_ASSERT(
+        pos >= 0, "While trying to set the position in {} an error occured: {} ({})", path_, strerror(errno), errno);
+    return pos;
+  }
+}
+
+size_t OutputFile::GetPosition() { return SetPosition(Position::RELATIVE_TO_CURRENT, 0); }
+
+size_t OutputFile::SetPosition(Position position, ssize_t offset) {
+  FlushBuffer();
+  return SeekFile(position, offset);
+}
+
+// logical constness
+// NOLINTNEXTLINE (readability-make-member-function-const)
+bool OutputFile::AcquireLock() {
+  MG_ASSERT(IsOpen(), "Trying to acquire a write lock on an unopened file!");
+  int ret = -1;
+  while (true) {
+    struct flock lock = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
+    ret = fcntl(fd_, F_SETLK, &lock);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are handled in the return below.
+      break;
+    }
+  }
+  return ret != -1;
+}
+
+auto OutputFile::AcquireLockWithTimeout(uint32_t data_dir_lock_acquisition_timeout_sec, uint16_t const sleep_time_ms)
+    -> bool {
+  if (data_dir_lock_acquisition_timeout_sec == 0) return AcquireLock();
+  auto const start_time = std::chrono::steady_clock::now();
+  auto const lock_file_timeout = std::chrono::seconds{data_dir_lock_acquisition_timeout_sec};
+  while (true) {
+    if (AcquireLock()) return true;
+    if (std::chrono::steady_clock::now() - start_time > lock_file_timeout) {
+      return false;
+    }
+    spdlog::trace("Failed to acquire lock on {}, retrying in {}ms...", path_, sleep_time_ms);
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time_ms));
+  }
+  std::unreachable();
+}
+
+void OutputFile::Sync() {
+  FlushBuffer();
+
+  int ret = 0;
+  while (true) {
+    ret = fsync(fd_);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are fatal errors and are handled in the
+      // MG_ASSERT below.
+      break;
+    }
+  }
+
+  // In this check we are extremely rigorous because any error except EINTR is
+  // treated as a fatal error that will crash the database. The errors that will
+  // mainly occur are EIO which indicates an I/O error on the physical device
+  // and ENOSPC (documented only in new kernels) which indicates that the
+  // physical device doesn't have any space left. If we don't succeed in
+  // syncing pending data to the physical device there is no mechanism to
+  // determine which parts of the `write` calls weren't synced. That is why
+  // we call this a fatal error and we don't continue further.
+  //
+  // A good description of issues with `fsync` can be seen here:
+  // https://stackoverflow.com/questions/42434872/writing-programs-to-cope-with-i-o-errors-causing-lost-writes-on-linux
+  //
+  // A discussion between PostgreSQL developers of what to do when `fsync`
+  // fails can be seen here:
+  // https://www.postgresql.org/message-id/flat/CAMsr%2BYE5Gs9iPqw2mQ6OHt1aC5Qk5EuBFCyG%2BvzHun1EqMxyQg%40mail.gmail.com#CAMsr+YE5Gs9iPqw2mQ6OHt1aC5Qk5EuBFCyG+vzHun1EqMxyQg@mail.gmail.com
+  //
+  // A brief of the `fsync` semantics can be seen here (part of the mailing list
+  // discussion linked above):
+  // https://www.postgresql.org/message-id/20180402185320.GM11627%40technoir
+  //
+  // The PostgreSQL developers decided to do the same thing (die) when such an
+  // error occurs:
+  // https://www.postgresql.org/message-id/20180427222842.in2e4mibx45zdth5@alap3.anarazel.de
+  MG_ASSERT(ret == 0,
+            "While trying to sync {}, an error occurred: {} ({}). Possibly {} "
+            "bytes from previous write calls were lost.",
+            path_,
+            strerror(errno),
+            errno,
+            written_since_last_sync_);
+
+  // Reset the counter.
+  written_since_last_sync_ = 0;
+}
+
+void OutputFile::Close() noexcept {
+  FlushBuffer();
+
+  int ret = 0;
+  while (true) {
+    ret = close(fd_);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are fatal errors and are handled in the
+      // MG_ASSERT below.
+      break;
+    }
+  }
+
+  MG_ASSERT(ret == 0,
+            "While trying to close {}, an error occurred: {} ({}). Possibly {} "
+            "bytes from previous write calls were lost.",
+            path_,
+            strerror(errno),
+            errno,
+            written_since_last_sync_);
+
+  fd_ = -1;
+  written_since_last_sync_ = 0;
+  path_ = "";
+}
+
+void OutputFile::FlushBuffer() {
+  MG_ASSERT(IsOpen(), "Flushing an unopened file.");
+
+  std::unique_lock flush_guard(flush_lock_);
+  FlushBufferInternal();
+}
+
+void OutputFile::FlushBufferInternal(size_t to_write) {
+  // Doesn't update buffer_position_ to avoid using atomics
+  auto *buffer = buffer_.data();
+  while (to_write > 0) {
+    auto written = write(fd_, buffer, to_write);
+    if (written == -1 && errno == EINTR) {
+      continue;
+    }
+
+    MG_ASSERT(written > 0,
+              "while trying to write to {} an error occurred: {} ({}). "
+              "Possibly {} bytes of data were lost from this call and "
+              "possibly {} bytes were lost from previous calls.",
+              path_,
+              strerror(errno),
+              errno,
+              buffer_position_,
+              written_since_last_sync_);
+
+    to_write -= written;
+    buffer += written;
+  }
+}
+
+void OutputFile::FlushBufferInternal() {
+  auto to_write = buffer_position_.load(std::memory_order_acquire);
+  MG_ASSERT(to_write <= kFileBufferSize,
+            "While trying to write to {} more file was written to the "
+            "buffer than the buffer has space!",
+            path_);
+  FlushBufferInternal(to_write);
+  buffer_position_.store(0, std::memory_order_release);
+}
+
+void OutputFile::DisableFlushing() { flush_lock_.lock_shared(); }
+
+void OutputFile::EnableFlushing() {
+  flush_lock_.unlock_shared();
+  TryFlushing();
+}
+
+std::pair<const uint8_t *, size_t> OutputFile::CurrentBuffer() const {
+  return {buffer_.data(), buffer_position_.load(std::memory_order_acquire)};
+}
+
+size_t OutputFile::GetSize() {
+  // There's an alternative way of fetching the files size using fstat.
+  // lseek should be faster for smaller number of clients while fstat
+  // should have an advantage for high number of clients.
+  // The reason for this is the way those functions implement the
+  // support for multi-threading. While lseek uses locks, fstat is lockfree.
+  // For now, lseek should be good enough. If at any point this proves to
+  // be a bottleneck, fstat should be considered.
+  return SeekFile(Position::RELATIVE_TO_END, 0) + buffer_position_.load(std::memory_order_acquire);
+}
+
+void OutputFile::TryFlushing() {
+  if (std::unique_lock guard(flush_lock_, std::try_to_lock); guard.owns_lock()) {
+    FlushBufferInternal();
+  }
+}
+
+NonConcurrentOutputFile::~NonConcurrentOutputFile() {
+  if (IsOpen()) Close();
+}
+
+bool NonConcurrentOutputFile::Open(const std::filesystem::path &path, Mode mode) {
+  MG_ASSERT(!IsOpen(),
+            "While trying to open {} for writing the database"
+            " used a handle that already has {} opened in it!",
+            path,
+            path_);
+  path_ = path;
+  written_since_last_sync_ = 0;
+
+  int flags = O_WRONLY | O_CLOEXEC | O_CREAT;
+  if (mode == Mode::APPEND_TO_EXISTING) flags |= O_APPEND;
+
+  while (true) {
+    // The permissions are set to ((rw-r-----) & ~umask)
+    fd_ = open(path_.c_str(), flags, 0640);
+    if (fd_ == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are fatal errors and are handled in the
+      // MG_ASSERT below.
+      break;
+    }
+  }
+
+  auto const res = fd_ != -1;
+  if (!res) {
+    spdlog::error("While trying to open {} for writing an error occurred: {} ({})", path_, strerror(errno), errno);
+  }
+  return res;
+}
+
+bool NonConcurrentOutputFile::IsOpen() const { return fd_ != -1; }
+
+const std::filesystem::path &NonConcurrentOutputFile::path() const { return path_; }
+
+void NonConcurrentOutputFile::Write(const uint8_t *data, size_t size) {
+  auto const buffer_start = buffer_position_;
+
+  auto *write_ptr = buffer_.data() + buffer_start;
+  auto buffer_remaining = kFileBufferSize - buffer_start;
+  while (size > 0) {
+    if (buffer_remaining == 0) {
+      MG_ASSERT(IsOpen(), "Flushing an unopened file.");
+      FlushBufferInternal(kFileBufferSize);
+      buffer_remaining = kFileBufferSize;
+      write_ptr = buffer_.data();
+    }
+
+    auto const amount_to_write = std::min(size, buffer_remaining);
+    memcpy(write_ptr, data, amount_to_write);
+    size -= amount_to_write;
+    data += amount_to_write;
+    write_ptr += amount_to_write;
+    buffer_remaining -= amount_to_write;
+    written_since_last_sync_ += amount_to_write;
+  }
+  buffer_position_ = write_ptr - buffer_.data();
+}
+
+void NonConcurrentOutputFile::Write(const char *data, size_t size) {
+  Write(reinterpret_cast<const uint8_t *>(data), size);
+}
+
+void NonConcurrentOutputFile::Write(const std::string_view data) { Write(data.data(), data.size()); }
+
+size_t NonConcurrentOutputFile::SeekFile(const Position position, const ssize_t offset) {
+  int whence = 0;
+  switch (position) {
+    case Position::SET:
+      whence = SEEK_SET;
+      break;
+    case Position::RELATIVE_TO_CURRENT:
+      whence = SEEK_CUR;
+      break;
+    case Position::RELATIVE_TO_END:
+      whence = SEEK_END;
+      break;
+  }
+  while (true) {
+    auto pos = lseek(fd_, offset, whence);
+    if (pos == -1 && errno == EINTR) {
+      continue;
+    }
+    MG_ASSERT(
+        pos >= 0, "While trying to set the position in {} an error occured: {} ({})", path_, strerror(errno), errno);
+    return pos;
+  }
+}
+
+size_t NonConcurrentOutputFile::GetPosition() { return SetPosition(Position::RELATIVE_TO_CURRENT, 0); }
+
+size_t NonConcurrentOutputFile::SetPosition(Position position, ssize_t offset) {
+  FlushBuffer();
+  return SeekFile(position, offset);
+}
+
+// NOLINTNEXTLINE (readability-make-member-function-const)
+bool NonConcurrentOutputFile::AcquireLock() {
+  MG_ASSERT(IsOpen(), "Trying to acquire a write lock on an unopened file!");
+  int ret = -1;
+  while (true) {
+    struct flock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = 0;
+    lock.l_len = 0;
+    ret = fcntl(fd_, F_SETLK, &lock);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are handled in the return below.
+      break;
+    }
+  }
+  return ret != -1;
+}
+
+void NonConcurrentOutputFile::Sync() {
+  FlushBuffer();
+
+  int ret = 0;
+  while (true) {
+    ret = fsync(fd_);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are fatal errors and are handled in the
+      // MG_ASSERT below.
+      break;
+    }
+  }
+
+  // In this check we are extremely rigorous because any error except EINTR is
+  // treated as a fatal error that will crash the database. The errors that will
+  // mainly occur are EIO which indicates an I/O error on the physical device
+  // and ENOSPC (documented only in new kernels) which indicates that the
+  // physical device doesn't have any space left. If we don't succeed in
+  // syncing pending data to the physical device there is no mechanism to
+  // determine which parts of the `write` calls weren't synced. That is why
+  // we call this a fatal error and we don't continue further.
+  //
+  // A good description of issues with `fsync` can be seen here:
+  // https://stackoverflow.com/questions/42434872/writing-programs-to-cope-with-i-o-errors-causing-lost-writes-on-linux
+  //
+  // A discussion between PostgreSQL developers of what to do when `fsync`
+  // fails can be seen here:
+  // https://www.postgresql.org/message-id/flat/CAMsr%2BYE5Gs9iPqw2mQ6OHt1aC5Qk5EuBFCyG%2BvzHun1EqMxyQg%40mail.gmail.com#CAMsr+YE5Gs9iPqw2mQ6OHt1aC5Qk5EuBFCyG+vzHun1EqMxyQg@mail.gmail.com
+  //
+  // A brief of the `fsync` semantics can be seen here (part of the mailing list
+  // discussion linked above):
+  // https://www.postgresql.org/message-id/20180402185320.GM11627%40technoir
+  //
+  // The PostgreSQL developers decided to do the same thing (die) when such an
+  // error occurs:
+  // https://www.postgresql.org/message-id/20180427222842.in2e4mibx45zdth5@alap3.anarazel.de
+  MG_ASSERT(ret == 0,
+            "While trying to sync {}, an error occurred: {} ({}). Possibly {} "
+            "bytes from previous write calls were lost.",
+            path_,
+            strerror(errno),
+            errno,
+            written_since_last_sync_);
+
+  // Reset the counter.
+  written_since_last_sync_ = 0;
+}
+
+void NonConcurrentOutputFile::Close() noexcept {
+  FlushBuffer();
+
+  int ret = 0;
+  while (true) {
+    ret = close(fd_);
+    if (ret == -1 && errno == EINTR) {
+      // The call was interrupted, try again...
+      continue;
+    } else {
+      // All other possible errors are fatal errors and are handled in the
+      // MG_ASSERT below.
+      break;
+    }
+  }
+
+  MG_ASSERT(ret == 0,
+            "While trying to close {}, an error occurred: {} ({}). Possibly {} "
+            "bytes from previous write calls were lost.",
+            path_,
+            strerror(errno),
+            errno,
+            written_since_last_sync_);
+
+  fd_ = -1;
+  written_since_last_sync_ = 0;
+  path_ = "";
+}
+
+void NonConcurrentOutputFile::FlushBuffer() {
+  MG_ASSERT(IsOpen(), "Flushing an unopened file.");
+
+  FlushBufferInternal();
+}
+
+void NonConcurrentOutputFile::FlushBufferInternal(size_t to_write) {
+  auto *buffer = buffer_.data();
+  while (to_write > 0) {
+    auto written = write(fd_, buffer, to_write);
+    if (written == -1 && errno == EINTR) {
+      continue;
+    }
+
+    MG_ASSERT(written > 0,
+              "while trying to write to {} an error occurred: {} ({}). "
+              "Possibly {} bytes of data were lost from this call and "
+              "possibly {} bytes were lost from previous calls.",
+              path_,
+              strerror(errno),
+              errno,
+              buffer_position_,
+              written_since_last_sync_);
+
+    to_write -= written;
+    buffer += written;
+  }
+}
+
+void NonConcurrentOutputFile::FlushBufferInternal() {
+  auto to_write = buffer_position_;
+  MG_ASSERT(to_write <= kFileBufferSize,
+            "While trying to write to {} more file was written to the "
+            "buffer than the buffer has space!",
+            path_);
+  FlushBufferInternal(to_write);
+  buffer_position_ = 0;
+}
+
+std::pair<const uint8_t *, size_t> NonConcurrentOutputFile::CurrentBuffer() const {
+  return {buffer_.data(), buffer_position_};
+}
+
+size_t NonConcurrentOutputFile::GetSize() {
+  // There's an alternative way of fetching the files size using fstat.
+  // lseek should be faster for smaller number of clients while fstat
+  // should have an advantage for high number of clients.
+  // The reason for this is the way those functions implement the
+  // support for multi-threading. While lseek uses locks, fstat is lockfree.
+  // For now, lseek should be good enough. If at any point this proves to
+  // be a bottleneck, fstat should be considered.
+  return SeekFile(Position::RELATIVE_TO_END, 0) + buffer_position_;
+}
+
+}  // namespace memgraph::utils

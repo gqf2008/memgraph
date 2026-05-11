@@ -1,0 +1,1233 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#include "storage/v2/vertex_accessor.hpp"
+#include <range/v3/all.hpp>
+#include "query/exceptions.hpp"
+#include "query/hops_limit.hpp"
+#include "storage/v2/constraints/constraint_violation.hpp"
+#include "storage/v2/constraints/type_constraints_kind.hpp"
+#include "storage/v2/disk/storage.hpp"
+#include "storage/v2/edge.hpp"
+#include "storage/v2/edge_accessor.hpp"
+#include "storage/v2/edge_direction.hpp"
+#include "storage/v2/id_types.hpp"
+#include "storage/v2/indexed_property_decoder.hpp"
+#include "storage/v2/mvcc.hpp"
+#include "storage/v2/property_value.hpp"
+#include "storage/v2/schema_info.hpp"
+#include "storage/v2/schema_info_glue.hpp"
+#include "storage/v2/storage.hpp"
+#include "storage/v2/transaction.hpp"
+#include "storage/v2/vertex_info_cache.hpp"
+#include "storage/v2/vertex_info_helpers.hpp"
+#include "storage/v2/view.hpp"
+#include "utils/atomic_memory_block.hpp"
+#include "utils/logging.hpp"
+#include "utils/memory_tracker.hpp"
+#include "utils/small_vector.hpp"
+#include "utils/variant_helpers.hpp"
+
+namespace r = ranges;
+namespace rv = r::views;
+
+namespace memgraph::storage {
+
+namespace {
+void HandleTypeConstraintViolation(Storage const *storage, ConstraintViolation const &violation) {
+  throw query::QueryException("IS TYPED {} violation on {}({})",
+                              TypeConstraintKindToString(*violation.constraint_kind),
+                              storage->LabelToName(violation.label),
+                              storage->PropertyToName(*violation.properties.begin()));
+}
+
+std::optional<PropertyValue> TryConvertToVectorIndexProperty(Storage *storage, Vertex *vertex, PropertyId property,
+                                                             const PropertyValue &value) {
+  if (!value.IsAnyList() || value.IsVectorIndexId()) return std::nullopt;
+  auto vector_index_ids = storage->indices_.vector_index_.GetVectorIndexIdsForVertex(vertex, property);
+  if (vector_index_ids.empty()) return std::nullopt;
+  return PropertyValue(
+      PropertyValue::VectorIndexIdData{.ids = std::move(vector_index_ids), .vector = ListToVector(value)});
+}
+
+// Manages lock lifetime based on whether vertex currently has uncommitted
+// non-sequential deltas. Any transaction that has created non-sequential deltas may
+// abort and have to remove deltas from the middle of the delta chain. When a
+// vertex has these uncommitted non-sequential deltas in its chain, this read lock
+// must be held both when we read the `vertex.delta` AND continue to be held
+// whilst we walk the delta chain. For vertices with no uncommitted non-sequential
+// deltas, this uses the shorter lock duration of just reading `vertex.delta`
+// under lock.
+class VertexReadLock {
+ public:
+  explicit VertexReadLock(memgraph::storage::Vertex const *vertex)
+      : vertex_{vertex}, lock_{vertex->lock, std::defer_lock} {}
+
+  class SnapshotGuard {
+   public:
+    explicit SnapshotGuard(VertexReadLock *manager, bool has_uncommitted_non_sequential_deltas)
+        : manager_{manager}, has_uncommitted_non_sequential_deltas_{has_uncommitted_non_sequential_deltas} {}
+
+    ~SnapshotGuard() {
+      if (!has_uncommitted_non_sequential_deltas_) {
+        manager_->lock_.unlock();
+      }
+    }
+
+    SnapshotGuard(SnapshotGuard const &) = delete;
+    SnapshotGuard(SnapshotGuard &&) = delete;
+    SnapshotGuard &operator=(SnapshotGuard const &) = delete;
+    SnapshotGuard &operator=(SnapshotGuard &&) = delete;
+
+   private:
+    VertexReadLock *manager_;
+    bool has_uncommitted_non_sequential_deltas_;
+  };
+
+  // `AcquireLock` can be called at most once per `VertexReadLock` instance.
+  // Calling it again on a `VertexReadLock` for which you've already acquired
+  // the lock could result in deadlock.
+  SnapshotGuard AcquireLock() {
+    lock_.lock();
+    return SnapshotGuard{this, vertex_->has_uncommitted_non_sequential_deltas()};
+  }
+
+ private:
+  memgraph::storage::Vertex const *vertex_;
+  std::shared_lock<memgraph::utils::RWSpinLock> lock_;
+};
+
+}  // namespace
+
+namespace detail {
+std::pair<bool, bool> IsVisible(Vertex const *vertex, Transaction const *transaction, View view) {
+  bool exists = true;
+  bool deleted = false;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock(vertex);
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex->deleted();
+    delta = vertex->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction->UseCache();
+
+    if (useCache) {
+      auto const &cache = transaction->manyDeltasCache;
+      auto existsRes = cache.GetExists(view, vertex);
+      auto deletedRes = cache.GetDeleted(view, vertex);
+      if (existsRes && deletedRes) return {*existsRes, *deletedRes};
+    }
+
+    auto const n_processed = ApplyDeltasForRead(transaction, delta, view, [&](const Delta &delta) {
+      // clang-format off
+      DeltaDispatch(delta, utils::ChainedOverloaded{
+          Deleted_ActionMethod(deleted),
+          Exists_ActionMethod(exists)
+      });
+      // clang-format on
+    });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction->manyDeltasCache;
+      cache.StoreExists(view, vertex, exists);
+      cache.StoreDeleted(view, vertex, deleted);
+    }
+  }
+
+  return {exists, deleted};
+}
+}  // namespace detail
+
+std::optional<VertexAccessor> VertexAccessor::Create(Vertex *vertex, Storage *storage, Transaction *transaction,
+                                                     View view) {
+  if (const auto [exists, deleted] = detail::IsVisible(vertex, transaction, view); !exists || deleted) {
+    return std::nullopt;
+  }
+
+  return VertexAccessor{vertex, storage, transaction};
+}
+
+bool VertexAccessor::IsVisible(const Vertex *vertex, const Transaction *transaction, View view) {
+  const auto [exists, deleted] = detail::IsVisible(vertex, transaction, view);
+  return exists && !deleted;
+}
+
+bool VertexAccessor::IsVisible(View view) const {
+  const auto [exists, deleted] = detail::IsVisible(vertex_, transaction_, view);
+  return exists && (for_deleted_ || !deleted);
+}
+
+Result<bool> VertexAccessor::AddLabel(LabelId label) {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+  utils::MemoryTracker::OutOfMemoryExceptionEnabler oom_exception;
+  // This has to be called before any object gets locked
+  // 1. do a optimistic shared lock
+  // 2. lock vertex and check
+  // 3. if unique lock is needed unlock both the vertex and accessor
+  // 4. take unique access and re-lock vertex
+  std::optional<SchemaInfo::ModifyingAccessor> schema_acc;
+  if (auto schema_shared_acc = SchemaInfoAccessor(storage_, transaction_); schema_shared_acc) {
+    schema_acc = std::move(*schema_shared_acc);
+  }
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+
+  // Now that the vertex is locked, we can check if it has any edges and if it does, we can upgrade the accessor
+  if (schema_acc) {
+    if (!vertex_->in_edges.empty() || !vertex_->out_edges.empty()) {
+      guard.unlock();
+      schema_acc.reset();
+      std::visit(utils::Overloaded{[&schema_acc](auto in) { schema_acc = std::move(in); }},
+                 *SchemaInfoUniqueAccessor(storage_, transaction_));
+      guard.lock();
+      // Need to re-check for serialization errors
+      if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+      if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+    }
+  }
+
+  if (std::ranges::contains(vertex_->labels, label)) return false;
+
+  utils::AtomicMemoryBlock([transaction = transaction_, vertex = vertex_, &label]() {
+    CreateAndLinkDelta(transaction, vertex, Delta::RemoveLabelTag(), label);
+    vertex->labels.push_back(label);
+  });
+
+  storage_->UpdateLabelCount(label, 1);
+
+  if (!transaction_->active_constraints_->type_->empty()) {
+    if (auto validation_result = transaction_->active_constraints_->type_->Validate(*vertex_, label);
+        !validation_result.has_value()) {
+      HandleTypeConstraintViolation(storage_, validation_result.error());
+    }
+  }
+
+  if (storage_->config_.salient.items.enable_schema_metadata) {
+    storage_->stored_node_labels_.try_insert(label);
+  }
+
+  transaction_->async_index_helper_.Track(label);
+
+  /// TODO: some by pointers, some by reference => not good, make it better
+  transaction_->active_constraints_->unique_->UpdateOnAddLabel(label, *vertex_, transaction_->start_timestamp);
+  if (transaction_->constraint_verification_info) transaction_->constraint_verification_info->AddedLabel(vertex_);
+  storage_->indices_.UpdateOnAddLabel(label, vertex_, *transaction_, storage_->name_id_mapper_.get());
+  transaction_->UpdateOnChangeLabel(label, vertex_);
+
+  // NOTE Has to be called at the end because it needs to be able to release the vertex lock (in case edges need to be
+  // updated)
+  if (schema_acc) {
+    std::visit(utils::Overloaded(
+                   [&, guard = std::move(guard)](SchemaInfo::TransactionalEdgeModifyingAccessor &acc) mutable {
+                     acc.AddLabel(vertex_, label, std::move(guard));
+                   },
+                   [&](auto &acc) mutable { acc.AddLabel(vertex_, label); }),
+               *schema_acc);
+  }
+  return true;
+}
+
+// TODO: move to after update and change naming to vertex after update
+Result<bool> VertexAccessor::RemoveLabel(LabelId label) {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+  // This has to be called before any object gets locked
+  // 1. do an optimistic shared lock
+  // 2. lock vertex and check
+  // 3. if unique lock is needed unlock both the vertex and accessor
+  // 4. take unique access and re-lock vertex
+  std::optional<SchemaInfo::ModifyingAccessor> schema_acc;
+  if (auto schema_shared_acc = SchemaInfoAccessor(storage_, transaction_); schema_shared_acc) {
+    schema_acc = std::move(*schema_shared_acc);
+  }
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+
+  // Now that the vertex is locked, we can check if it has any edges and if it does, we can upgrade the accessor
+  if (schema_acc) {
+    if (!vertex_->in_edges.empty() || !vertex_->out_edges.empty()) {
+      guard.unlock();
+      schema_acc.reset();
+      std::visit(utils::Overloaded{[&schema_acc](auto in) { schema_acc = std::move(in); }},
+                 *SchemaInfoUniqueAccessor(storage_, transaction_));
+      guard.lock();
+      // Need to re-check for serialization errors
+      if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+      if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+    }
+  }
+
+  auto it = r::find(vertex_->labels, label);
+  if (it == vertex_->labels.end()) return false;
+
+  utils::AtomicMemoryBlock([transaction = transaction_, vertex = vertex_, &label, &it]() {
+    CreateAndLinkDelta(transaction, vertex, Delta::AddLabelTag(), label);
+    *it = vertex->labels.back();
+    vertex->labels.pop_back();
+  });
+
+  storage_->UpdateLabelCount(label, -1);
+
+  /// TODO: some by pointers, some by reference => not good, make it better
+  transaction_->active_constraints_->unique_->UpdateOnRemoveLabel(label, *vertex_, transaction_->start_timestamp);
+  storage_->indices_.UpdateOnRemoveLabel(label, vertex_, *transaction_, storage_->name_id_mapper_.get());
+  transaction_->UpdateOnChangeLabel(label, vertex_);
+
+  // NOTE Has to be called at the end because it needs to be able to release the vertex lock (in case edges need to be
+  // updated)
+  if (schema_acc) {
+    std::visit(utils::Overloaded(
+                   [&, guard = std::move(guard)](SchemaInfo::TransactionalEdgeModifyingAccessor &acc) mutable {
+                     acc.RemoveLabel(vertex_, label, std::move(guard));
+                   },
+                   [&](auto &acc) { acc.RemoveLabel(vertex_, label); }),
+               *schema_acc);
+  }
+  return true;
+}
+
+Result<bool> VertexAccessor::HasLabel(LabelId label, View view) const {
+  bool exists = true;
+  bool deleted = false;
+  bool has_label = false;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    has_label = std::ranges::contains(vertex_->labels, label);
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resLabel = cache.GetHasLabel(view, vertex_, label); resLabel) return {resLabel.value()};
+    }
+
+    auto const n_processed = ApplyDeltasForRead(transaction_, delta, view, [&, label](const Delta &delta) {
+      // clang-format off
+      DeltaDispatch(delta, utils::ChainedOverloaded{
+        Deleted_ActionMethod(deleted),
+        Exists_ActionMethod(exists),
+        HasLabel_ActionMethod(has_label, label)
+      });
+      // clang-format on
+    });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreHasLabel(view, vertex_, label, has_label);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return has_label;
+}
+
+Result<VertexKey> VertexAccessor::Labels(View view) const {
+  bool exists = true;
+  bool deleted = false;
+  VertexKey labels;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    labels = vertex_->labels;
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resLabels = cache.GetLabels(view, vertex_); resLabels) return {*resLabels};
+    }
+
+    auto const n_processed = ApplyDeltasForRead(transaction_, delta, view, [&](const Delta &delta) {
+      // clang-format off
+      DeltaDispatch(delta, utils::ChainedOverloaded{
+        Deleted_ActionMethod(deleted),
+        Exists_ActionMethod(exists),
+        Labels_ActionMethod(labels)
+      });
+      // clang-format on
+    });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreLabels(view, vertex_, labels);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return std::move(labels);
+}
+
+Result<PropertyValue> VertexAccessor::SetProperty(PropertyId property, const PropertyValue &value) const {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+
+  utils::MemoryTracker::OutOfMemoryExceptionEnabler oom_exception;
+
+  // Use converted value for vector index when applicable; otherwise use the input as-is.
+  std::optional<PropertyValue> converted;
+  if (!storage_->indices_.vector_index_.Empty()) {
+    converted = TryConvertToVectorIndexProperty(storage_, vertex_, property, value);
+  }
+  const auto &new_value = converted.value_or(value);
+
+  // This has to be called before any object gets locked
+  auto schema_acc = SchemaInfoAccessor(storage_, transaction_);
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+
+  PropertyValue old_value;
+  const bool skip_duplicate_write = !storage_->config_.salient.items.delta_on_identical_property_update;
+  auto const set_property_impl = [this,
+                                  transaction = transaction_,
+                                  vertex = vertex_,
+                                  &new_value,
+                                  &property,
+                                  &old_value,
+                                  skip_duplicate_write,
+                                  &schema_acc]() {
+    old_value = vertex->properties.GetProperty(
+        property,
+        IndexedPropertyDecoder<Vertex>{
+            .indices = &storage_->indices_, .name_id_mapper = storage_->name_id_mapper_.get(), .entity = vertex_});
+    // We could skip setting the value if the previous one is the same to the new
+    // one. This would save some memory as a delta would not be created as well as
+    // avoid copying the value. The reason we are not doing that is because the
+    // current code always follows the logical pattern of "create a delta" and
+    // "modify in-place". Additionally, the created delta will make other
+    // transactions get a SERIALIZATION_ERROR.
+    if (skip_duplicate_write && old_value == new_value) return true;
+    CreateAndLinkDelta(transaction, vertex, Delta::SetPropertyTag(), property, old_value);
+    vertex->properties.SetProperty(property, new_value);
+    if (schema_acc) {
+      std::visit(
+          utils::Overloaded{[vertex,
+                             property,
+                             new_type = ExtendedPropertyType{new_value},
+                             old_type = ExtendedPropertyType{old_value}](SchemaInfo::VertexModifyingAccessor &acc) {
+                              acc.SetProperty(vertex, property, new_type, old_type);
+                            },
+                            [](auto & /* unused */) { DMG_ASSERT(false, "Using the wrong accessor"); }},
+          *schema_acc);
+    }
+
+    if (!transaction_->active_constraints_->type_->empty()) {
+      if (auto validation_result = transaction_->active_constraints_->type_->Validate(*vertex_, property, new_value);
+          !validation_result.has_value()) {
+        HandleTypeConstraintViolation(storage_, validation_result.error());
+      }
+    }
+
+    return false;
+  };
+
+  auto early_exit = utils::AtomicMemoryBlock(set_property_impl);
+  if (early_exit) {
+    return std::move(old_value);
+  }
+
+  if (transaction_->constraint_verification_info) {
+    if (!new_value.IsNull()) {
+      transaction_->constraint_verification_info->AddedProperty(vertex_);
+    } else {
+      transaction_->constraint_verification_info->RemovedProperty(vertex_);
+    }
+  }
+  storage_->indices_.UpdateOnSetProperty(property, old_value, new_value, vertex_, *transaction_);
+  transaction_->UpdateOnSetProperty(property, old_value, new_value, vertex_);
+
+  return std::move(old_value);
+}
+
+Result<bool> VertexAccessor::InitProperties(std::map<storage::PropertyId, storage::PropertyValue> &properties) const {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+
+  utils::MemoryTracker::OutOfMemoryExceptionEnabler oom_exception;
+
+  if (!storage_->indices_.vector_index_.Empty()) {
+    for (auto &[property_id, property_value] : properties) {
+      if (auto converted = TryConvertToVectorIndexProperty(storage_, vertex_, property_id, property_value)) {
+        property_value = std::move(*converted);
+      }
+    }
+  }
+
+  // This has to be called before any object gets locked
+  auto schema_acc = SchemaInfoAccessor(storage_, transaction_);
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+  bool result{false};
+  utils::AtomicMemoryBlock(
+      [&result, &properties, storage = storage_, transaction = transaction_, vertex = vertex_, &schema_acc]() {
+        if (!vertex->properties.InitProperties(properties)) {
+          result = false;
+          return;
+        }
+        for (const auto &[property, new_value] : properties) {
+          CreateAndLinkDelta(transaction, vertex, Delta::SetPropertyTag(), property, PropertyValue());
+          // TODO: defer until once all properties have been set, to make fewer entries ?
+          storage->indices_.UpdateOnSetProperty(property, PropertyValue{}, new_value, vertex, *transaction);
+          transaction->UpdateOnSetProperty(property, PropertyValue{}, new_value, vertex);
+          if (transaction->constraint_verification_info) {
+            if (!new_value.IsNull()) {
+              transaction->constraint_verification_info->AddedProperty(vertex);
+            } else {
+              transaction->constraint_verification_info->RemovedProperty(vertex);
+            }
+          }
+          if (schema_acc) {
+            std::visit(
+                utils::Overloaded{[vertex = vertex, property = property, new_type = ExtendedPropertyType{new_value}](
+                                      SchemaInfo::VertexModifyingAccessor &acc) {
+                                    acc.SetProperty(vertex, property, new_type, ExtendedPropertyType{});
+                                  },
+                                  [](auto & /* unused */) { DMG_ASSERT(false, "Using the wrong accessor"); }},
+                *schema_acc);
+          }
+        }
+        // TODO If not performant enough there is also InitProperty()
+        if (!transaction->active_constraints_->type_->empty()) {
+          for (auto const &[property_id, property_value] : properties) {
+            if (auto validation_result =
+                    transaction->active_constraints_->type_->Validate(*vertex, property_id, property_value);
+                !validation_result.has_value()) {
+              HandleTypeConstraintViolation(storage, validation_result.error());
+            }
+          }
+        }
+        result = true;
+      });
+
+  return result;
+}
+
+Result<std::vector<std::tuple<PropertyId, PropertyValue, PropertyValue>>> VertexAccessor::UpdateProperties(
+    std::map<storage::PropertyId, storage::PropertyValue> &properties) const {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+
+  utils::MemoryTracker::OutOfMemoryExceptionEnabler oom_exception;
+
+  // If there is a vector index, we might need to convert list type properties to vector index property value types.
+  if (!storage_->indices_.vector_index_.Empty()) {
+    r::for_each(properties, [&](auto &pair) {
+      if (auto converted = TryConvertToVectorIndexProperty(storage_, vertex_, pair.first, pair.second)) {
+        pair.second = std::move(*converted);
+      }
+    });
+  }
+
+  // This has to be called before any object gets locked
+  auto schema_acc = SchemaInfoAccessor(storage_, transaction_);
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+
+  const bool skip_duplicate_update = storage_->config_.salient.items.delta_on_identical_property_update;
+  using ReturnType = decltype(vertex_->properties.UpdateProperties(properties));
+  std::optional<ReturnType> id_old_new_change;
+  utils::AtomicMemoryBlock([storage = storage_,
+                            transaction = transaction_,
+                            vertex = vertex_,
+                            &properties,
+                            &id_old_new_change,
+                            skip_duplicate_update,
+                            &schema_acc]() {
+    id_old_new_change.emplace(vertex->properties.UpdateProperties(properties));
+    if (!id_old_new_change) {
+      return;
+    }
+    for (auto &[id, old_value, new_value] : *id_old_new_change) {
+      if (skip_duplicate_update && old_value == new_value) continue;
+      CreateAndLinkDelta(transaction, vertex, Delta::SetPropertyTag(), id, old_value);
+      storage->indices_.UpdateOnSetProperty(id, old_value, new_value, vertex, *transaction);
+      transaction->UpdateOnSetProperty(id, old_value, new_value, vertex);
+      if (transaction->constraint_verification_info) {
+        if (!new_value.IsNull()) {
+          transaction->constraint_verification_info->AddedProperty(vertex);
+        } else {
+          transaction->constraint_verification_info->RemovedProperty(vertex);
+        }
+      }
+      if (schema_acc) {
+        std::visit(utils::Overloaded{
+                       [&](SchemaInfo::VertexModifyingAccessor &acc) {
+                         acc.SetProperty(vertex, id, ExtendedPropertyType{new_value}, ExtendedPropertyType{old_value});
+                       },
+                       [](auto & /* unused */) { DMG_ASSERT(false, "Using the wrong accessor"); }},
+                   *schema_acc);
+      }
+      // Validate type constraint using already-extracted value (avoids re-reading property store)
+      if (!transaction->active_constraints_->type_->empty()) {
+        if (auto validation_result = transaction->active_constraints_->type_->Validate(*vertex, id, new_value);
+            !validation_result.has_value()) {
+          HandleTypeConstraintViolation(storage, validation_result.error());
+        }
+      }
+    }
+  });
+
+  return std::move(id_old_new_change).value_or(ReturnType{});
+}
+
+Result<std::map<PropertyId, PropertyValue>> VertexAccessor::ClearProperties() {
+  if (transaction_->edge_import_mode_active) {
+    throw query::WriteVertexOperationInEdgeImportModeException();
+  }
+  // This has to be called before any object gets locked
+  auto schema_acc = SchemaInfoAccessor(storage_, transaction_);
+  auto guard = std::unique_lock{vertex_->lock};
+
+  if (!PrepareForWrite(transaction_, vertex_)) return std::unexpected{Error::SERIALIZATION_ERROR};
+
+  if (vertex_->deleted()) return std::unexpected{Error::DELETED_OBJECT};
+
+  using ReturnType = decltype(vertex_->properties.Properties());
+  std::optional<ReturnType> properties;
+  utils::AtomicMemoryBlock(
+      [storage = storage_, transaction = transaction_, vertex = vertex_, &properties, &schema_acc]() {
+        properties.emplace(vertex->properties.Properties());
+        if (!properties) {
+          return;
+        }
+        auto new_value = PropertyValue();
+        for (const auto &[property, old_value] : *properties) {
+          CreateAndLinkDelta(transaction, vertex, Delta::SetPropertyTag(), property, old_value);
+          storage->indices_.UpdateOnSetProperty(property, old_value, new_value, vertex, *transaction);
+          transaction->UpdateOnSetProperty(property, old_value, new_value, vertex);
+          if (schema_acc) {
+            std::visit(utils::Overloaded{
+                           [&](SchemaInfo::VertexModifyingAccessor &acc) {
+                             acc.SetProperty(vertex, property, ExtendedPropertyType{}, ExtendedPropertyType{old_value});
+                           },
+                           [](auto & /* unused */) { DMG_ASSERT(false, "Using the wrong accessor"); }},
+                       *schema_acc);
+          }
+        }
+        if (transaction->constraint_verification_info) {
+          transaction->constraint_verification_info->RemovedProperty(vertex);
+        }
+        vertex->properties.ClearProperties();
+      });
+
+  return std::move(properties).value_or(ReturnType{});
+}
+
+Result<PropertyValue> VertexAccessor::GetProperty(PropertyId property, View view) const {
+  bool exists = true;
+  bool deleted = false;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  auto value = std::invoke([&]() -> PropertyValue {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    delta = vertex_->delta();
+    auto prop_value = vertex_->properties.GetProperty(
+        property,
+        IndexedPropertyDecoder<Vertex>{
+            .indices = &storage_->indices_, .name_id_mapper = storage_->name_id_mapper_.get(), .entity = vertex_});
+    return prop_value;
+  });
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) [[unlikely]] {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resProperty = cache.GetProperty(view, vertex_, property); resProperty) return {*resProperty};
+    }
+
+    auto const n_processed =
+        ApplyDeltasForRead(transaction_, delta, view, [&exists, &deleted, &value, property](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            PropertyValue_ActionMethod(value, property)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreProperty(view, vertex_, property, value);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return std::move(value);
+}
+
+Result<uint64_t> VertexAccessor::GetPropertySize(PropertyId property, View view) const {
+  {
+    auto guard = std::shared_lock{vertex_->lock};
+    Delta *delta = vertex_->delta();
+    if (!delta) {
+      return vertex_->properties.PropertySize(property);
+    }
+  }
+
+  auto property_result = this->GetProperty(property, view);
+  if (!property_result) {
+    return std::unexpected{property_result.error()};
+  }
+
+  auto property_store = storage::PropertyStore();
+  property_store.SetProperty(property, *property_result);
+
+  return property_store.PropertySize(property);
+};
+
+Result<std::map<PropertyId, PropertyValue>> VertexAccessor::Properties(View view) const {
+  bool exists = true;
+  bool deleted = false;
+  std::map<PropertyId, PropertyValue> properties;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    properties = vertex_->properties.Properties(IndexedPropertyDecoder<Vertex>{
+        .indices = &storage_->indices_, .name_id_mapper = storage_->name_id_mapper_.get(), .entity = vertex_});
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resProperties = cache.GetProperties(view, vertex_); resProperties) return {*resProperties};
+    }
+
+    auto const n_processed =
+        ApplyDeltasForRead(transaction_, delta, view, [&exists, &deleted, &properties](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Properties_ActionMethod(properties)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreProperties(view, vertex_, properties);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return std::move(properties);
+}
+
+Result<std::map<PropertyId, PropertyValue>> VertexAccessor::PropertiesByPropertyIds(
+    std::span<PropertyId const> properties, View view) const {
+  bool exists = true;
+  bool deleted = false;
+  std::vector<PropertyValue> property_values;
+  property_values.reserve(properties.size());
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    auto property_paths = properties |
+                          rv::transform([](PropertyId property) { return storage::PropertyPath{property}; }) |
+                          r::to<std::vector<storage::PropertyPath>>();
+    property_values = vertex_->properties.ExtractPropertyValuesMissingAsNull(property_paths);
+    delta = vertex_->delta();
+  }
+  auto properties_map =
+      rv::zip(properties, property_values) | rv::transform([](const auto &property_id_value_pair) {
+        return std::make_pair(std::get<0>(property_id_value_pair), std::get<1>(property_id_value_pair));
+      }) |
+      r::to<std::map<PropertyId, PropertyValue>>();
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      // Note: We don't have specific cache for properties by IDs, so we skip caching for now
+    }
+
+    auto const n_processed =
+        ApplyDeltasForRead(transaction_, delta, view, [&exists, &deleted, &properties_map](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Properties_ActionMethod(properties_map)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      // Note: We don't cache this specific subset of properties for now
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return std::move(properties_map);
+}
+
+auto VertexAccessor::BuildResultOutEdges(edge_store const &out_edges) const {
+  auto ret = std::vector<EdgeAccessor>{};
+  ret.reserve(out_edges.size());
+  for (const auto &[edge_type, to_vertex, edge] : out_edges) {
+    ret.emplace_back(edge, edge_type, vertex_, to_vertex, storage_, transaction_);
+  }
+  return ret;
+};
+
+auto VertexAccessor::BuildResultInEdges(edge_store const &out_edges) const {
+  auto ret = std::vector<EdgeAccessor>{};
+  ret.reserve(out_edges.size());
+  for (const auto &[edge_type, from_vertex, edge] : out_edges) {
+    ret.emplace_back(edge, edge_type, from_vertex, vertex_, storage_, transaction_);
+  }
+  return ret;
+};
+
+auto VertexAccessor::BuildResultWithDisk(edge_store const &in_memory_edges, std::vector<EdgeAccessor> const &disk_edges,
+                                         View view, const std::string &mode) const {
+  /// TODO: (andi) Better mode handling
+  auto ret = std::invoke([this, &mode, &in_memory_edges]() {
+    if (mode == "OUT") {
+      return BuildResultOutEdges(in_memory_edges);
+    }
+    return BuildResultInEdges(in_memory_edges);
+  });
+  /// TODO: (andi) Maybe this check can be done in build_result without damaging anything else.
+  std::erase_if(ret, [transaction = this->transaction_, view](const EdgeAccessor &edge_acc) {
+    return !edge_acc.IsVisible(view) || !edge_acc.FromVertex().IsVisible(view) ||
+           !edge_acc.ToVertex().IsVisible(view) || transaction->edges_to_delete_.contains(edge_acc.Gid().ToString());
+  });
+  std::unordered_set<storage::Gid> in_mem_edges_set;
+  in_mem_edges_set.reserve(ret.size());
+  for (const auto &in_mem_edge_acc : ret) {
+    in_mem_edges_set.insert(in_mem_edge_acc.Gid());
+  }
+
+  for (const auto &disk_edge_acc : disk_edges) {
+    auto const edge_gid_str = disk_edge_acc.Gid().ToString();
+    if (in_mem_edges_set.contains(disk_edge_acc.Gid()) ||
+        (view == View::NEW && transaction_->edges_to_delete_.contains(edge_gid_str))) {
+      continue;
+    }
+    ret.emplace_back(disk_edge_acc);
+  }
+  return ret;
+};
+
+Result<EdgesVertexAccessorResult> VertexAccessor::InEdges(View view, const std::vector<EdgeTypeId> &edge_types,
+                                                          const VertexAccessor *destination,
+                                                          query::HopsLimit *hops_limit) const {
+  DMG_ASSERT(!destination || destination->transaction_ == transaction_, "Invalid accessor!");
+
+  std::vector<EdgeAccessor> disk_edges{};
+
+  /// TODO: (andi) I think that here should be another check:
+  /// in memory storage should be checked only if something exists before loading from the disk.
+  if (transaction_->IsDiskStorage()) [[unlikely]] {
+    auto *disk_storage = static_cast<DiskStorage *>(storage_);
+    const auto [exists, deleted] = detail::IsVisible(vertex_, transaction_, view);
+    if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+    if (deleted) return std::unexpected{Error::DELETED_OBJECT};
+    bool const edges_modified_in_tx = !vertex_->in_edges.empty();
+
+    disk_edges = disk_storage->InEdges(this, edge_types, destination, transaction_, view, hops_limit);
+    if (view == View::OLD && !edges_modified_in_tx) {
+      return EdgesVertexAccessorResult{.edges = disk_edges, .expanded_count = static_cast<int64_t>(disk_edges.size())};
+    }
+  }
+
+  auto const *destination_vertex = destination ? destination->vertex_ : nullptr;
+
+  bool exists = true;
+  bool deleted = false;
+  auto in_edges = edge_store{};
+  Delta *delta = nullptr;
+  int64_t expanded_count = 0;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    if (edge_types.empty() && !destination) {
+      expanded_count = HandleExpansionsWithoutEdgeTypes(in_edges, hops_limit, EdgeDirection::IN);
+    } else {
+      expanded_count = HandleExpansionsWithEdgeTypes(in_edges, edge_types, destination, hops_limit, EdgeDirection::IN);
+    }
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resInEdges = cache.GetInEdges(view, vertex_, destination_vertex, edge_types); resInEdges)
+        return EdgesVertexAccessorResult{.edges = BuildResultInEdges(*resInEdges), .expanded_count = expanded_count};
+    }
+
+    auto const n_processed = ApplyDeltasForRead(
+        transaction_,
+        delta,
+        view,
+        [&exists, &deleted, &in_edges, &edge_types, &destination_vertex](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Edges_ActionMethod<EdgeDirection::IN>(in_edges, edge_types, destination_vertex)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreInEdges(view, vertex_, destination_vertex, edge_types, in_edges);
+    }
+  }
+
+  if (!exists) [[unlikely]]
+    return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (deleted) [[unlikely]]
+    return std::unexpected{Error::DELETED_OBJECT};
+
+  if (transaction_->IsDiskStorage()) [[unlikely]] {
+    return EdgesVertexAccessorResult{.edges = BuildResultWithDisk(in_edges, disk_edges, view, "IN"),
+                                     .expanded_count = expanded_count};
+  }
+
+  return EdgesVertexAccessorResult{.edges = BuildResultInEdges(in_edges), .expanded_count = expanded_count};
+}
+
+Result<EdgesVertexAccessorResult> VertexAccessor::OutEdges(View view, const std::vector<EdgeTypeId> &edge_types,
+                                                           const VertexAccessor *destination,
+                                                           query::HopsLimit *hops_limit) const {
+  DMG_ASSERT(!destination || destination->transaction_ == transaction_, "Invalid accessor!");
+
+  /// TODO: (andi) I think that here should be another check:
+  /// in memory storage should be checked only if something exists before loading from the disk.
+  std::vector<EdgeAccessor> disk_edges{};
+  if (transaction_->IsDiskStorage()) [[unlikely]] {
+    auto *disk_storage = static_cast<DiskStorage *>(storage_);
+    const auto [exists, deleted] = detail::IsVisible(vertex_, transaction_, view);
+    if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+    if (deleted) return std::unexpected{Error::DELETED_OBJECT};
+    bool edges_modified_in_tx = !vertex_->out_edges.empty();
+
+    disk_edges = disk_storage->OutEdges(this, edge_types, destination, transaction_, view, hops_limit);
+
+    if (view == View::OLD && !edges_modified_in_tx) {
+      return EdgesVertexAccessorResult{.edges = disk_edges, .expanded_count = static_cast<int64_t>(disk_edges.size())};
+    }
+  }
+
+  auto const *dst_vertex = destination ? destination->vertex_ : nullptr;
+
+  bool exists = true;
+  bool deleted = false;
+  auto out_edges = edge_store{};
+  Delta *delta = nullptr;
+  int64_t expanded_count = 0;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    if (edge_types.empty() && !destination) {
+      expanded_count = HandleExpansionsWithoutEdgeTypes(out_edges, hops_limit, EdgeDirection::OUT);
+    } else {
+      expanded_count =
+          HandleExpansionsWithEdgeTypes(out_edges, edge_types, destination, hops_limit, EdgeDirection::OUT);
+    }
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resOutEdges = cache.GetOutEdges(view, vertex_, dst_vertex, edge_types); resOutEdges)
+        return EdgesVertexAccessorResult{.edges = BuildResultOutEdges(*resOutEdges), .expanded_count = expanded_count};
+    }
+
+    auto const n_processed = ApplyDeltasForRead(
+        transaction_, delta, view, [&exists, &deleted, &out_edges, &edge_types, &dst_vertex](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Edges_ActionMethod<EdgeDirection::OUT>(out_edges, edge_types, dst_vertex)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreOutEdges(view, vertex_, dst_vertex, edge_types, out_edges);
+    }
+  }
+
+  if (!exists) [[unlikely]]
+    return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (deleted) [[unlikely]]
+    return std::unexpected{Error::DELETED_OBJECT};
+
+  if (transaction_->IsDiskStorage()) [[unlikely]] {
+    return EdgesVertexAccessorResult{.edges = BuildResultWithDisk(out_edges, disk_edges, view, "OUT"),
+                                     .expanded_count = expanded_count};
+  }
+  /// InMemoryStorage
+  return EdgesVertexAccessorResult{.edges = BuildResultOutEdges(out_edges), .expanded_count = expanded_count};
+}
+
+Result<size_t> VertexAccessor::InDegree(View view) const {
+  std::vector<EdgeAccessor> disk_edges{};
+  if (transaction_->IsDiskStorage()) {
+    auto res = InEdges(view);
+    if (res) {
+      return res->edges.size();
+    }
+    return std::unexpected{res.error()};
+  }
+
+  bool exists = true;
+  bool deleted = false;
+  size_t degree = 0;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    degree = vertex_->in_edges.size();
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resInDegree = cache.GetInDegree(view, vertex_); resInDegree) return {*resInDegree};
+    }
+
+    auto const n_processed =
+        ApplyDeltasForRead(transaction_, delta, view, [&exists, &deleted, &degree](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Degree_ActionMethod<EdgeDirection::IN>(degree)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreInDegree(view, vertex_, degree);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return degree;
+}
+
+Result<size_t> VertexAccessor::OutDegree(View view) const {
+  if (transaction_->IsDiskStorage()) {
+    auto res = OutEdges(view);
+    if (res) {
+      return res->edges.size();
+    }
+    return std::unexpected{res.error()};
+  }
+
+  bool exists = true;
+  bool deleted = false;
+  size_t degree = 0;
+  Delta *delta = nullptr;
+  VertexReadLock read_lock{vertex_};
+  {
+    auto const guard = read_lock.AcquireLock();
+    deleted = vertex_->deleted();
+    degree = vertex_->out_edges.size();
+    delta = vertex_->delta();
+  }
+
+  // Checking cache has a cost, only do it if we have any deltas
+  // if we have no deltas then what we already have from the vertex is correct.
+  if (delta && transaction_->isolation_level != IsolationLevel::READ_UNCOMMITTED) {
+    // IsolationLevel::READ_COMMITTED would be tricky to propagate invalidation to
+    // so for now only cache for IsolationLevel::SNAPSHOT_ISOLATION
+    auto const useCache = transaction_->UseCache();
+    if (useCache) {
+      auto const &cache = transaction_->manyDeltasCache;
+      if (auto resError = HasError(view, cache, vertex_, for_deleted_); resError) return std::unexpected{*resError};
+      if (auto resOutDegree = cache.GetOutDegree(view, vertex_); resOutDegree) return {*resOutDegree};
+    }
+
+    auto const n_processed =
+        ApplyDeltasForRead(transaction_, delta, view, [&exists, &deleted, &degree](const Delta &delta) {
+          // clang-format off
+          DeltaDispatch(delta, utils::ChainedOverloaded{
+            Deleted_ActionMethod(deleted),
+            Exists_ActionMethod(exists),
+            Degree_ActionMethod<EdgeDirection::OUT>(degree)
+          });
+          // clang-format on
+        });
+
+    if (useCache && n_processed >= FLAGS_delta_chain_cache_threshold) {
+      auto &cache = transaction_->manyDeltasCache;
+      cache.StoreExists(view, vertex_, exists);
+      cache.StoreDeleted(view, vertex_, deleted);
+      cache.StoreOutDegree(view, vertex_, degree);
+    }
+  }
+
+  if (!exists) return std::unexpected{Error::NONEXISTENT_OBJECT};
+  if (!for_deleted_ && deleted) return std::unexpected{Error::DELETED_OBJECT};
+  return degree;
+}
+
+int64_t VertexAccessor::HandleExpansionsWithoutEdgeTypes(edge_store &result_edges, query::HopsLimit *hops_limit,
+                                                         EdgeDirection direction) const {
+  const auto &edges = direction == EdgeDirection::IN ? vertex_->in_edges : vertex_->out_edges;
+  if (edges.empty()) return 0;
+
+  uint64_t expanded_count = 0;
+  if (hops_limit && hops_limit->IsUsed()) {
+    expanded_count = hops_limit->IncrementHopsCount(edges.size());
+    if (expanded_count > 0) {
+      std::copy_n(edges.begin(), expanded_count, std::back_inserter(result_edges));
+    }
+  } else {
+    expanded_count = edges.size();
+    result_edges = edges;
+  }
+  return static_cast<int64_t>(expanded_count);
+}
+
+int64_t VertexAccessor::HandleExpansionsWithEdgeTypes(edge_store &result_edges,
+                                                      const std::vector<EdgeTypeId> &edge_types,
+                                                      const VertexAccessor *destination, query::HopsLimit *hops_limit,
+                                                      EdgeDirection direction) const {
+  const auto &edges = direction == EdgeDirection::IN ? vertex_->in_edges : vertex_->out_edges;
+  if (edges.empty()) return 0;
+
+  uint64_t expanded_count = 0;
+  for (const auto &[edge_type, vertex, edge] : edges) {
+    if (hops_limit && hops_limit->IsUsed()) {
+      auto available_hops = hops_limit->IncrementHopsCount();
+      if (available_hops <= 0) break;
+    }
+    expanded_count++;
+    if (destination && vertex != destination->vertex_) continue;
+    if (!edge_types.empty() && !std::ranges::contains(edge_types, edge_type)) continue;
+    result_edges.emplace_back(edge_type, vertex, edge);
+  }
+  return static_cast<int64_t>(expanded_count);
+}
+}  // namespace memgraph::storage

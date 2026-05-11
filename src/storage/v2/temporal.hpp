@@ -1,0 +1,128 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#pragma once
+#include <cstdint>
+#include <iosfwd>
+#include <string_view>
+
+#include <boost/functional/hash_fwd.hpp>
+#include "utils/temporal.hpp"
+
+namespace memgraph::storage {
+
+enum class TemporalType : uint8_t { Date = 0, LocalTime, LocalDateTime, Duration };
+
+inline std::ostream &operator<<(std::ostream &stream, const TemporalType type) {
+  switch (type) {
+    case TemporalType::Date:
+      return stream << "Date";
+    case TemporalType::LocalTime:
+      return stream << "LocalTime";
+    case TemporalType::LocalDateTime:
+      return stream << "LocalDateTime";
+    case TemporalType::Duration:
+      return stream << "Duration";
+  }
+}
+
+constexpr std::string_view TemporalTypeToString(const TemporalType type) {
+  switch (type) {
+    case TemporalType::Date:
+      return "Date";
+    case TemporalType::LocalTime:
+      return "LocalTime";
+    case TemporalType::LocalDateTime:
+      return "LocalDateTime";
+    case TemporalType::Duration:
+      return "Duration";
+  }
+}
+
+struct TemporalData {
+  // For localdatetime use system time (UTC microseconds since epoch)
+  explicit TemporalData(TemporalType type, int64_t microseconds);
+
+  auto operator<=>(const TemporalData &) const = default;
+
+  friend std::ostream &operator<<(std::ostream &os, const TemporalData &t) {
+    switch (t.type) {
+      case TemporalType::Date:
+        return os << "DATE(\"" << utils::Date(std::chrono::microseconds{t.microseconds}) << "\")";
+      case TemporalType::LocalTime:
+        return os << "LOCALTIME(\"" << utils::LocalTime(t.microseconds) << "\")";
+      case TemporalType::LocalDateTime:
+        return os << "LOCALDATETIME(\"" << utils::LocalDateTime(t.microseconds) << "\")";
+      case TemporalType::Duration:
+        return os << "DURATION(\"" << utils::Duration(t.microseconds) << "\")";
+    }
+  }
+
+  TemporalType type;
+  int64_t microseconds;
+};
+
+enum class ZonedTemporalType : uint8_t { ZonedDateTime = 0 };
+
+constexpr std::string_view ZonedTemporalTypeToString(const ZonedTemporalType type) {
+  switch (type) {
+    case ZonedTemporalType::ZonedDateTime:
+      return "ZonedDateTime";
+  }
+}
+
+struct ZonedTemporalData {
+  explicit ZonedTemporalData(ZonedTemporalType type, std::chrono::sys_time<std::chrono::microseconds> microseconds,
+                             utils::Timezone timezone);
+
+  auto operator<=>(const ZonedTemporalData &) const = default;
+
+  friend std::ostream &operator<<(std::ostream &os, const ZonedTemporalData &t) {
+    switch (t.type) {
+      case ZonedTemporalType::ZonedDateTime:
+        return os << "DATETIME(\"" << utils::ZonedDateTime(t.microseconds, t.timezone) << "\")";
+    }
+  }
+
+  int64_t IntMicroseconds() const;
+
+  std::string TimezoneToString() const;
+
+  ZonedTemporalType type;
+  std::chrono::sys_time<std::chrono::microseconds> microseconds;
+  utils::Timezone timezone;
+};
+
+}  // namespace memgraph::storage
+
+namespace std {
+
+template <>
+struct hash<memgraph::storage::TemporalData> {
+  size_t operator()(memgraph::storage::TemporalData const &temporal_data) const noexcept {
+    return memgraph::utils::HashCombine<size_t, size_t>{}(
+        std::hash<memgraph::storage::TemporalType>{}(temporal_data.type),
+        std::hash<int64_t>{}(temporal_data.microseconds));
+  }
+};
+
+template <>
+struct hash<memgraph::storage::ZonedTemporalData> {
+  size_t operator()(memgraph::storage::ZonedTemporalData const &temporal_data) const noexcept {
+    std::size_t seed = 0;
+    boost::hash_combine(seed, std::hash<memgraph::storage::ZonedTemporalType>{}(temporal_data.type));
+    boost::hash_combine(seed, std::hash<uint64_t>{}(temporal_data.microseconds.time_since_epoch().count()));
+    boost::hash_combine(seed, std::hash<memgraph::utils::Timezone>{}(temporal_data.timezone));
+    return seed;
+  }
+};
+
+}  // namespace std

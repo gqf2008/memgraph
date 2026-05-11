@@ -87,7 +87,6 @@ class DiffSetup:
             "malloc": {"build": value},
             "mage": {"amd": value, "arm": value, "cuda": False},
             "mgcxx": {"unit": value},
-            "rust": {"core": value},
         }
 
     def _check_diff_workflow(self) -> bool:

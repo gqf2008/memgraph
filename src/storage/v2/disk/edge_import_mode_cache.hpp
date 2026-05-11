@@ -1,0 +1,74 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#pragma once
+
+#include "memory/db_arena_fwd.hpp"
+#include "storage/v2/disk/label_index.hpp"
+#include "storage/v2/disk/label_property_index.hpp"
+#include "storage/v2/id_types.hpp"
+#include "storage/v2/indices/indices.hpp"
+#include "storage/v2/inmemory/label_index.hpp"
+#include "storage/v2/inmemory/label_property_index.hpp"
+#include "storage/v2/transaction.hpp"
+#include "storage/v2/vertex.hpp"
+#include "utils/skip_list.hpp"
+
+namespace memgraph::storage {
+
+class EdgeImportModeCache final {
+ public:
+  explicit EdgeImportModeCache(const Config &config);
+
+  EdgeImportModeCache(const EdgeImportModeCache &) = delete;
+  EdgeImportModeCache &operator=(const EdgeImportModeCache &) = delete;
+  EdgeImportModeCache(EdgeImportModeCache &&) = delete;
+  EdgeImportModeCache &operator=(EdgeImportModeCache &&) = delete;
+  ~EdgeImportModeCache() = default;
+
+  InMemoryLabelIndex::Iterable Vertices(LabelId label, View view, Storage *storage, Transaction *transaction) const;
+
+  InMemoryLabelPropertyIndex::Iterable<InMemoryLabelPropertyIndex::Entry> Vertices(
+      LabelId label, PropertyId property, const std::optional<utils::Bound<PropertyValue>> &lower_bound,
+      const std::optional<utils::Bound<PropertyValue>> &upper_bound, View view, Storage *storage,
+      Transaction *transaction) const;
+
+  bool CreateIndex(LabelId label, PropertyId property,
+                   const std::optional<durability::ParallelizedSchemaCreationInfo> &parallel_exec_info = {});
+
+  bool CreateIndex(LabelId label,
+                   const std::optional<durability::ParallelizedSchemaCreationInfo> &parallel_exec_info = {});
+
+  bool VerticesWithLabelPropertyScanned(LabelId label, PropertyId property) const;
+
+  bool VerticesWithLabelScanned(LabelId label) const;
+
+  bool AllVerticesScanned() const;
+
+  utils::SkipListDb<Vertex>::Accessor AccessToVertices();
+
+  utils::SkipListDb<Edge>::Accessor AccessToEdges();
+
+  void SetScannedAllVertices();
+
+  utils::Synchronized<std::list<Transaction>, utils::SpinLock> &GetCommittedTransactions();
+
+ private:
+  utils::SkipListDb<Vertex> vertices_;
+  utils::SkipListDb<Edge> edges_;
+  Indices in_memory_indices_;
+  bool scanned_all_vertices_{false};
+  std::set<LabelId> scanned_labels_;
+  std::set<std::pair<LabelId, PropertyId>> scanned_label_properties_;
+  utils::Synchronized<std::list<Transaction>, utils::SpinLock> committed_transactions_;
+};
+
+}  // namespace memgraph::storage

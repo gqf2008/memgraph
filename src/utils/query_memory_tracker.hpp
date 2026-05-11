@@ -1,0 +1,73 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <shared_mutex>
+#include <unordered_map>
+#include <utility>
+
+#include "utils/logging.hpp"
+#include "utils/memory_tracker.hpp"
+
+namespace memgraph::utils {
+
+// Class which handles tracking of query memory
+// together with procedure memory. Default
+// active procedure id is set to -1, as
+// procedures start from id 1.
+// This class is meant to be used in environment
+// where we don't execute multiple procedures in parallel
+// but procedure can have multiple threads which are doing allocations
+class QueryMemoryTracker {
+ public:
+  explicit QueryMemoryTracker(memgraph::utils::MemoryTracker *parent = nullptr) : transaction_tracker_(parent) {}
+
+  QueryMemoryTracker(QueryMemoryTracker &&other) noexcept
+      : transaction_tracker_(std::move(other.transaction_tracker_)),
+        proc_memory_trackers_(std::move(other.proc_memory_trackers_)) {}
+
+  QueryMemoryTracker(const QueryMemoryTracker &other) = delete;
+
+  QueryMemoryTracker &operator=(QueryMemoryTracker &&other) = delete;
+  QueryMemoryTracker &operator=(const QueryMemoryTracker &other) = delete;
+
+  ~QueryMemoryTracker() = default;
+
+  // Track allocation on query and procedure if active
+  bool TrackAlloc(size_t size);
+
+  // Track Free on query and procedure if active
+  void TrackFree(size_t);
+
+  // Set query limit
+  void SetQueryLimit(size_t);
+
+  // Currently tracked memory
+  int64_t Amount() const;
+
+  // Create a new or get existing procedure tracker
+  void CreateOrSetProcTracker(int64_t, size_t);
+
+  // Stop procedure tracking
+  static void StopProcTracking();
+
+ private:
+  // MemoryTracker is thread-safe via atomics. Default-constructed state means "no limit".
+  memgraph::utils::MemoryTracker transaction_tracker_;
+
+  // Procedure setup is not thread safe, but MemoryTracker is thread-safe via atomics.
+  std::unordered_map<int64_t, memgraph::utils::MemoryTracker> proc_memory_trackers_;
+  std::shared_mutex proc_trackers_mutex_;
+};
+
+}  // namespace memgraph::utils

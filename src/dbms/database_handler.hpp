@@ -1,0 +1,121 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#pragma once
+
+#ifdef MG_ENTERPRISE
+
+#include <algorithm>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <string_view>
+
+#include "dbms/database.hpp"
+#include "dbms/database_protector.hpp"
+
+#include "handler.hpp"
+
+namespace memgraph::dbms {
+
+/* NOTE
+ * The Database object is shared. All the higher-level function calls should be protected.
+ * Storage function calls should already be protected; add protection where needed.
+ *
+ * Current implementation uses a handler of Database objects. It owns them and gives
+ * Gatekeeper::Accessor to it. These guarantee that the object won't be
+ * destroyed unless no one is using it.
+ */
+
+/**Config
+ * @brief Multi-database storage handler
+ *
+ */
+class DatabaseHandler : public Handler<Database> {
+ public:
+  using HandlerT = Handler<Database>;
+
+  ~DatabaseHandler() override {
+    for (auto &db : *this) {
+      try {
+        if (auto db_acc = db.second.access()) {
+          (*db_acc)->StopAllBackgroundTasks();
+        }
+      } catch (std::exception const &e) {
+        spdlog::error("Exception in DatabaseHandler destructor: {}", e.what());
+      } catch (...) {
+        spdlog::error("Unknown exception in DatabaseHandler destructor");
+      }
+    }
+  }
+
+  /**
+   * @brief Generate new storage associated with the passed name.
+   *
+   * @param name Name associating the new interpreter context
+   * @param config Storage configuration
+   * @return HandlerT::NewResult
+   */
+  HandlerT::NewResult New(storage::Config config) {
+    // Control that no one is using the same data directory
+    if (std::ranges::any_of(*this, [&](auto &elem) {
+          auto db_acc = elem.second.access();
+          MG_ASSERT(db_acc.has_value(), "Gatekeeper in invalid state");
+          return db_acc->get()->config().durability.storage_directory == config.durability.storage_directory;
+        })) {
+      spdlog::info("Tried to generate new storage using a claimed directory.");
+      return std::unexpected{NewError::EXISTS};
+    }
+
+    // Create database protector factory that can look up this specific database by name
+    auto database_protector_factory = [this, db_name = config.salient.name.str()]() -> storage::DatabaseProtectorPtr {
+      if (auto db_gatekeeper_opt = this->Get(db_name)) {
+        return std::make_unique<DatabaseProtector>(*db_gatekeeper_opt);
+      }
+      // Fallback: return null if database not found (shouldn't happen in normal operation)
+      return nullptr;
+    };
+
+    return HandlerT::New(std::piecewise_construct, *config.salient.name.str_view(), config, database_protector_factory);
+  }
+
+  /**
+   * @brief All currently active storage.
+   *
+   * @return std::vector<std::string>
+   */
+  std::vector<std::string> All() const {
+    std::vector<std::string> res;
+    res.reserve(std::distance(cbegin(), cend()));
+    std::ranges::for_each(*this, [&](const auto &elem) {
+      const auto is_marked_for_deletion = elem.second.is_marked_for_deletion();
+      if (is_marked_for_deletion.has_value() && !is_marked_for_deletion.value()) res.push_back(elem.first);
+    });
+    return res;
+  }
+
+  /**
+   * @brief Get the associated storage's configuration
+   *
+   * @param name
+   * @return std::optional<storage::Config>
+   */
+  std::optional<storage::Config> GetConfig(std::string_view name) {
+    auto db = Get(name);
+    if (db) {
+      return (*db)->config();
+    }
+    return std::nullopt;
+  }
+};
+
+}  // namespace memgraph::dbms
+#endif

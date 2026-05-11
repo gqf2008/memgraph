@@ -1,0 +1,205 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#pragma once
+
+#include <spdlog/spdlog.h>
+#include <expected>
+#include <optional>
+#include <string_view>
+#include <unordered_map>
+
+#include "global.hpp"
+#include "utils/exceptions.hpp"
+#include "utils/gatekeeper.hpp"
+#include "utils/thread_pool.hpp"
+
+namespace memgraph::dbms {
+
+/**
+ * @brief Generic multi-database content handler.
+ *
+ * @tparam T
+ */
+template <typename T>
+class Handler {
+ public:
+  struct string_hash {
+    using is_transparent = void;
+
+    [[nodiscard]] size_t operator()(const char *s) const { return std::hash<std::string_view>{}(s); }
+
+    [[nodiscard]] size_t operator()(std::string_view s) const { return std::hash<std::string_view>{}(s); }
+
+    [[nodiscard]] size_t operator()(const std::string &s) const { return std::hash<std::string>{}(s); }
+  };
+
+  using container_type = std::unordered_map<std::string, utils::Gatekeeper<T>, string_hash, std::equal_to<>>;
+  using value_type = typename container_type::value_type;
+  using reference = typename container_type::reference;
+  using const_reference = typename container_type::const_reference;
+  using iterator = typename container_type::iterator;
+  using const_iterator = typename container_type::const_iterator;
+  using difference_type = typename container_type::difference_type;
+  using size_type = typename container_type::size_type;
+  using NewResult = std::expected<typename utils::Gatekeeper<T>::Accessor, NewError>;
+
+  /**
+   * @brief Empty Handler constructor.
+   *
+   */
+  Handler() = default;
+
+  virtual ~Handler() = default;
+
+  /**
+   * @brief Generate a new context and corresponding configuration.
+   *
+   * @tparam Args Variadic template of constructor arguments of T
+   * @param name Name associated with the new T
+   * @param args Arguments passed to the constructor of T
+   * @return NewResult
+   */
+  template <typename... Args>
+  NewResult New(std::piecewise_construct_t /* marker */, std::string_view name, Args &&...args) {
+    // Make sure the emplace will succeed, since we don't want to create temporary objects that could break something
+    if (!Has(name)) {
+      auto [itr, _] = items_.emplace(
+          std::piecewise_construct, std::forward_as_tuple(name), std::forward_as_tuple(std::forward<Args>(args)...));
+      auto db_acc = itr->second.access();
+      if (db_acc) return std::move(*db_acc);
+      return std::unexpected{NewError::DEFUNCT};
+    }
+    spdlog::info("Item with name \"{}\" already exists.", name);
+    return std::unexpected{NewError::EXISTS};
+  }
+
+  /**
+   * @brief Get pointer to context.
+   *
+   * @param name Name associated with the wanted context
+   * @return std::optional<typename utils::Gatekeeper<T>::Accessor>
+   */
+  std::optional<typename utils::Gatekeeper<T>::Accessor> Get(std::string_view name) {
+    if (auto search = items_.find(name); search != items_.end()) {
+      return search->second.access();
+    }
+    return std::nullopt;
+  }
+
+  /**
+   * @brief Delete the context associated with the name.
+   *
+   * @param name Name associated with the context to delete
+   * @return true on success
+   * @throw BasicException
+   */
+  bool TryDelete(std::string_view name) {
+    if (auto itr = items_.find(name); itr != items_.end()) {
+      auto db_acc = itr->second.access();
+      if (db_acc && db_acc->try_delete()) {
+        db_acc->reset();
+        items_.erase(itr);
+        return true;
+      }
+      return false;
+    }
+    // TODO: Change to return enum
+    throw utils::BasicException("Unknown item \"{}\".", name);
+  }
+
+  /**
+   * @brief Delete or defunct the context associated with the name.
+   *
+   * @param name Name associated with the context to delete
+   * @param post_delete_func What to do after deletion has happened
+   */
+  template <typename Func>
+  void DeferDelete(std::string_view name, Func &&post_delete_func) {
+    auto itr = items_.find(name);
+    if (itr == items_.end()) return;
+
+    auto db_acc = itr->second.access();
+    if (!db_acc) return;
+
+    if (db_acc->try_delete()) {
+      // Delete the database now
+      db_acc->reset();
+      post_delete_func();
+    } else {
+      // Defer deletion
+      db_acc->reset();
+      // TODO: Make sure this shuts down correctly
+      auto task = [gk = std::move(itr->second), post_delete_func = std::forward<Func>(post_delete_func)]() mutable {
+        gk.~Gatekeeper<T>();
+        post_delete_func();
+      };
+      defer_pool_.AddTask(std::move(task));
+    }
+    // In any case remove from handled map
+    items_.erase(itr);
+  }
+
+  /**
+   * @brief Check if a name is already used.
+   *
+   * @param name Name to check
+   * @return true if a T is already associated with the name
+   */
+  bool Has(std::string_view name) const { return items_.contains(name); }
+
+  /**
+   * @brief Rename the context associated with the name.
+   *
+   * @param old_name Name associated with the context to rename
+   * @param new_name New name for the context
+   * @return true on success, false if new_name already exists or context is in use
+   */
+  std::expected<void, RenameError> Rename(std::string_view old_name, std::string_view new_name) {
+    auto old_itr = items_.find(old_name);
+    if (old_itr == items_.end()) {
+      return std::unexpected{RenameError::NON_EXISTENT};
+    }
+
+    auto new_itr = items_.find(new_name);
+    if (new_itr != items_.end()) {
+      return std::unexpected{RenameError::ALREADY_EXISTS};
+    }
+
+    // Move the gatekeeper to the new name
+    auto gatekeeper = std::move(old_itr->second);
+    items_.erase(old_itr);
+    items_.emplace(new_name, std::move(gatekeeper));
+    return {};
+  }
+
+  iterator begin() noexcept { return items_.begin(); }
+
+  iterator end() noexcept { return items_.end(); }
+
+  const_iterator begin() const noexcept { return items_.begin(); }
+
+  const_iterator end() const noexcept { return items_.end(); }
+
+  const_iterator cbegin() const noexcept { return items_.cbegin(); }
+
+  const_iterator cend() const noexcept { return items_.cend(); }
+
+  [[nodiscard]] size_type size() const noexcept { return items_.size(); }
+
+  [[nodiscard]] bool empty() const noexcept { return items_.empty(); }
+
+ private:
+  container_type items_;  //!< map to all active items
+  utils::ThreadPool defer_pool_{1};
+};
+
+}  // namespace memgraph::dbms

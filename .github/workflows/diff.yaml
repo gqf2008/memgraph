@@ -37,10 +37,6 @@ on:
         type: boolean
         default: true
         description: "Run the mgcxx tests."
-      rust_core:
-        type: boolean
-        default: true
-        description: "Run the Rust tests."
   workflow_call:
     inputs:
       community_core:
@@ -74,10 +70,6 @@ on:
         type: boolean
         default: true
         description: "Run the mgcxx tests."
-      rust_core:
-        type: boolean
-        default: true
-        description: "Run the Rust tests."
       ref:
         description: 'Branch or commit ref to run the workflow on'
         required: false
@@ -104,7 +96,6 @@ jobs:
       run_mage_arm: ${{ steps.setup.outputs.run_mage_arm }}
       run_mage_cuda: ${{ steps.setup.outputs.run_mage_cuda }}
       run_mgcxx_unit: ${{ steps.setup.outputs.run_mgcxx_unit }}
-      run_rust_core: ${{ steps.setup.outputs.run_rust_core }}
     env:
       GH_CONTEXT: ${{ toJson(github) }}
       GH_CONTEXT_FILE_NAME: github_context.json
@@ -200,13 +191,5 @@ jobs:
     uses: ./.github/workflows/diff_mgcxx.yml
     with:
       run_test: ${{ needs.DiffSetup.outputs.run_mgcxx_unit == 'true' }}
-      ref: ${{ inputs.ref || github.ref }}
-    secrets: inherit
-
-  Rust:
-    needs: DiffSetup
-    if: ${{ needs.DiffSetup.outputs.run_rust_core == 'true' }}
-    uses: ./.github/workflows/rust.yml
-    with:
       ref: ${{ inputs.ref || github.ref }}
     secrets: inherit

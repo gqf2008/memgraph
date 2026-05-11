@@ -1,0 +1,180 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#include <chrono>
+#include <random>
+#include <thread>
+#include <unordered_set>
+
+#include <fmt/format.h>
+#include <gflags/gflags.h>
+
+#include "common.hpp"
+#include "io/network/fmt.hpp"
+#include "utils/logging.hpp"
+#include "utils/thread.hpp"
+#include "utils/timer.hpp"
+
+int main(int argc, char **argv) {
+  google::SetUsageMessage("Memgraph E2E Replication Read-write Benchmark");
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
+  memgraph::logging::RedirectToStderr();
+
+  auto database_endpoints = mg::e2e::replication::ParseDatabaseEndpoints(FLAGS_database_endpoints);
+
+  mg::Client::Init();
+
+  {
+    auto client = mg::e2e::replication::Connect(database_endpoints[0]);
+    client->Execute("MATCH (n) DETACH DELETE n;");
+    client->DiscardAll();
+    client->Execute("CREATE INDEX ON :Node(id);");
+    client->DiscardAll();
+    client->Execute("CREATE CONSTRAINT ON (n:Node) ASSERT n.id IS UNIQUE;");
+    client->DiscardAll();
+    client->Execute("CREATE CONSTRAINT ON (n:Node) ASSERT n.id IS TYPED INTEGER;");
+    client->DiscardAll();
+
+    // Poll until all replicas have the constraints (with 5s timeout for async replicas)
+    for (const auto &database_endpoint : database_endpoints) {
+      std::vector<std::vector<mg::Value>> constraints;
+      const bool success = mg::e2e::replication::WaitForCondition([&database_endpoint, &constraints]() {
+        auto client = mg::e2e::replication::Connect(database_endpoint);
+        client->Execute("SHOW CONSTRAINT INFO;");
+        if (auto maybe_constraints = client->FetchAll()) {
+          constraints = std::move(*maybe_constraints);
+          return constraints.size() == 2;
+        }
+        return false;
+      });
+      if (!success) {
+        LOG_FATAL("Timed out waiting for 2 constraints on {} (got {})", database_endpoint.SocketAddress(),
+                  constraints.size());
+      }
+
+      // sort by constraint type
+      std::sort(constraints.begin(), constraints.end(),
+                [](auto const &lhs, auto const &rhs) { return lhs[0].ValueString() < rhs[0].ValueString(); });
+
+      {
+        const auto constraint_type = constraints[0][0].ValueString();
+        const auto label_name = constraints[0][1].ValueString();
+        const auto property_name = constraints[0][2].ValueString();
+        const auto type = constraints[0][3].ValueString();
+        if (constraint_type != "data_type" || label_name != "Node" || property_name != "id" || type != "INTEGER") {
+          LOG_FATAL("{} does NOT have a valid type constraint created.", database_endpoint.SocketAddress());
+        }
+      }
+      {
+        const auto constraint_type = constraints[1][0].ValueString();
+        const auto label_name = constraints[1][1].ValueString();
+        const auto property_name = constraints[1][2].ValueList()[0].ValueString();
+        const auto type = constraints[1][3].ValueString();
+        if (constraint_type != "unique" || label_name != "Node" || property_name != "id" || !type.empty()) {
+          LOG_FATAL("{} does NOT have a valid unique constraint created.", database_endpoint.SocketAddress());
+        }
+      }
+    }
+    spdlog::info("All constraints are in-place.");
+
+    for (int i = 0; i < FLAGS_nodes; ++i) {
+      client->Execute("CREATE (:Node {id:" + std::to_string(i) + "});");
+      client->DiscardAll();
+    }
+    mg::e2e::replication::IntGenerator edge_generator("EdgeCreateGenerator", 0, FLAGS_nodes - 1);
+    for (int i = 0; i < FLAGS_edges; ++i) {
+      client->Execute("MATCH (n {id:" + std::to_string(edge_generator.Next()) +
+                      "}), (m {id:" + std::to_string(edge_generator.Next()) + "}) CREATE (n)-[:Edge]->(m);");
+      client->DiscardAll();
+    }
+  }
+
+  {
+    const int num_threads = std::thread::hardware_concurrency();
+    std::vector<std::thread> threads;
+    std::vector<double> thread_duration;
+    threads.reserve(num_threads);
+    thread_duration.resize(num_threads);
+
+    for (int i = 0; i < num_threads; ++i) {
+      const auto &database_endpoint = database_endpoints[i % database_endpoints.size()];
+      threads.emplace_back(
+          [i, &database_endpoint, cluster_size = database_endpoints.size(), &local_duration = thread_duration[i]] {
+            auto client = mg::e2e::replication::Connect(database_endpoint);
+            mg::e2e::replication::IntGenerator node_update_generator(fmt::format("NodeUpdateGenerator {}", i), 0,
+                                                                     FLAGS_nodes - 1);
+            memgraph::utils::Timer t;
+
+            while (true) {
+              local_duration = t.Elapsed().count();
+              if (local_duration >= FLAGS_reads_duration_limit) break;
+              // In the main case try to update.
+              if (i % cluster_size == 0) {
+                try {
+                  client->Execute("MATCH (n:Node {id:" + std::to_string(node_update_generator.Next()) +
+                                  "}) SET n.id = " + std::to_string(node_update_generator.Next()) + " RETURN n.id;");
+                  client->FetchAll();
+                } catch (const std::exception &e) {
+                  // Pass.
+                }
+              } else {  // In the replica case fetch all unique ids.
+                try {
+                  client->Execute("MATCH (n) RETURN n.id;");
+                  const auto data = client->FetchAll();
+                  std::unordered_set<int64_t> unique;
+                  for (const auto &value : *data) {
+                    unique.insert(value[0].ValueInt());
+                  }
+                  if ((*data).size() != unique.size()) {
+                    LOG_FATAL("Some ids are equal.");
+                  }
+                } catch (const std::exception &e) {
+                  LOG_FATAL(e.what());
+                  break;
+                }
+              }
+            }
+          });
+    }
+
+    for (auto &t : threads) {
+      if (t.joinable()) t.join();
+    }
+  }
+
+  {
+    auto client = mg::e2e::replication::Connect(database_endpoints[0]);
+    client->Execute("DROP CONSTRAINT ON (n:Node) ASSERT n.id IS UNIQUE");
+    client->DiscardAll();
+    client->Execute("DROP CONSTRAINT ON (n:Node) ASSERT n.id IS TYPED INTEGER;");
+    client->DiscardAll();
+    // Poll until all replicas have dropped the constraints (with 5s timeout for async replicas)
+    for (const auto &database_endpoint : database_endpoints) {
+      size_t remaining_constraints = 0;
+      const bool success = mg::e2e::replication::WaitForCondition([&database_endpoint, &remaining_constraints]() {
+        auto client = mg::e2e::replication::Connect(database_endpoint);
+        client->Execute("SHOW CONSTRAINT INFO;");
+        if (const auto data = client->FetchAll()) {
+          remaining_constraints = data->size();
+          return data->empty();
+        }
+        return false;
+      });
+      if (!success) {
+        LOG_FATAL("{} still has some constraints ({} remaining).", database_endpoint.SocketAddress(),
+                  remaining_constraints);
+      }
+    }
+    spdlog::info("All constraints were deleted.");
+  }
+
+  return 0;
+}

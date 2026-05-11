@@ -1,0 +1,133 @@
+// Copyright 2026 Memgraph Ltd.
+//
+// Use of this software is governed by the Business Source License
+// included in the file licenses/BSL.txt; by using this file, you agree to be bound by the terms of the Business Source
+// License, and you may not use this file except in compliance with the Business Source License.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0, included in the file
+// licenses/APL.txt.
+
+#include <benchmark/benchmark.h>
+#include <memory>
+
+#include "communication/result_stream_faker.hpp"
+#include "query/auth_checker.hpp"
+#include "query/config.hpp"
+#include "query/interpreter.hpp"
+#include "query/interpreter_context.hpp"
+#include "tests/test_commit_args_helper.hpp"
+#include "utils/logging.hpp"
+#include "utils/synchronized.hpp"
+
+std::filesystem::path data_directory{std::filesystem::temp_directory_path() / "expansion-benchmark"};
+
+class ExpansionBenchFixture : public benchmark::Fixture {
+ protected:
+  std::optional<memgraph::system::System> system;
+  std::optional<memgraph::query::AllowEverythingAuthChecker> auth_checker;
+  std::optional<memgraph::query::InterpreterContext> interpreter_context;
+  std::optional<memgraph::query::Interpreter> interpreter;
+  std::optional<memgraph::utils::Gatekeeper<memgraph::dbms::Database>> db_gk;
+  std::optional<memgraph::utils::Synchronized<memgraph::replication::ReplicationState, memgraph::utils::RWSpinLock>>
+      repl_state;
+
+  void SetUp(const benchmark::State &state) override {
+    repl_state.emplace(std::nullopt);  // No need for a storage directory, since we are not replicating or restoring
+    memgraph::storage::Config config{};
+    config.durability.storage_directory = data_directory;
+    config.disk.main_storage_directory = data_directory / "disk";
+    db_gk.emplace(std::move(config));
+    auto db_acc_opt = db_gk->access();
+    MG_ASSERT(db_acc_opt, "Failed to access db");
+    auto &db_acc = *db_acc_opt;
+
+    system.emplace();
+    auth_checker.emplace();
+    interpreter_context.emplace(memgraph::query::InterpreterConfig{},
+                                nullptr,
+                                nullptr,
+                                nullptr,
+                                &repl_state.value(),
+                                *system,
+                                nullptr
+#ifdef MG_ENTERPRISE
+                                ,
+                                nullptr,
+                                nullptr
+#endif
+    );
+
+    auto label = db_acc->storage()->NameToLabel("Starting");
+
+    {
+      auto dba = db_acc->Access(memgraph::storage::WRITE);
+      for (int i = 0; i < state.range(0); i++) dba->CreateVertex();
+
+      // the fixed part is one vertex expanding to 1000 others
+      auto start = dba->CreateVertex();
+      MG_ASSERT(start.AddLabel(label).has_value());
+      auto edge_type = dba->NameToEdgeType("edge_type");
+      for (int i = 0; i < 1000; i++) {
+        auto dest = dba->CreateVertex();
+        MG_ASSERT(dba->CreateEdge(&start, &dest, edge_type).has_value());
+      }
+      MG_ASSERT(dba->PrepareForCommitPhase(memgraph::tests::MakeMainCommitArgs()).has_value());
+    }
+
+    {
+      auto unique_acc = db_acc->UniqueAccess();
+      MG_ASSERT(unique_acc->CreateIndex(label).has_value());
+      MG_ASSERT(unique_acc->PrepareForCommitPhase(memgraph::tests::MakeMainCommitArgs()).has_value());
+    }
+
+    interpreter.emplace(&*interpreter_context, std::move(db_acc));
+    interpreter->SetUser(auth_checker->GenQueryUser(std::nullopt, {}));
+  }
+
+  void TearDown(const benchmark::State &) override {
+    interpreter = std::nullopt;
+    interpreter_context = std::nullopt;
+    db_gk.reset();
+    auth_checker.reset();
+    system.reset();
+    std::filesystem::remove_all(data_directory);
+  }
+};
+
+BENCHMARK_DEFINE_F(ExpansionBenchFixture, Match)(benchmark::State &state) {
+  auto query = "MATCH (s:Starting) return s";
+
+  while (state.KeepRunning()) {
+    ResultStreamFaker results(interpreter->current_db_.db_acc_->get()->storage());
+    interpreter->Prepare(query, memgraph::query::no_params_fn, {});
+    interpreter->PullAll(&results);
+  }
+}
+
+BENCHMARK_REGISTER_F(ExpansionBenchFixture, Match)
+    ->RangeMultiplier(1024)
+    ->Range(1, 1 << 20)
+    ->Unit(benchmark::kMillisecond);
+
+BENCHMARK_DEFINE_F(ExpansionBenchFixture, Expand)(benchmark::State &state) {
+  auto query = "MATCH (s:Starting) WITH s MATCH (s)--(d) RETURN count(d)";
+
+  while (state.KeepRunning()) {
+    ResultStreamFaker results(interpreter->current_db_.db_acc_->get()->storage());
+    interpreter->Prepare(query, memgraph::query::no_params_fn, {});
+    interpreter->PullAll(&results);
+  }
+}
+
+BENCHMARK_REGISTER_F(ExpansionBenchFixture, Expand)
+    ->RangeMultiplier(1024)
+    ->Range(1, 1 << 20)
+    ->Unit(benchmark::kMillisecond);
+
+int main(int argc, char **argv) {
+  ::benchmark::Initialize(&argc, argv);
+  ::benchmark::RunSpecifiedBenchmarks();
+  return 0;
+}

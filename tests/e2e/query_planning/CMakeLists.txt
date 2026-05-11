@@ -1,0 +1,14 @@
+function(copy_query_planning_e2e_python_files FILE_NAME)
+    copy_e2e_python_files(query_planning ${FILE_NAME})
+endfunction()
+
+copy_query_planning_e2e_python_files(common.py)
+copy_query_planning_e2e_python_files(query_planning_bfs_cost_based.py)
+copy_query_planning_e2e_python_files(query_planning_cartesian.py)
+copy_query_planning_e2e_python_files(query_planning_optional.py)
+copy_query_planning_e2e_python_files(query_planning_point_index.py)
+copy_query_planning_e2e_python_files(query_planning_subquery.py)
+copy_query_planning_e2e_python_files(query_planning_valid_query_plans.py)
+copy_query_planning_e2e_python_files(query_planning_orderby_index.py)
+
+copy_e2e_files(query_planning workloads.yaml)
