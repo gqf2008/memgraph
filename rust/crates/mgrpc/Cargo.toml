@@ -1,0 +1,11 @@
+[package]
+name = "mgrpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mgslk = { path = "../mgslk" }
+mgdurability = { path = "../mgdurability" }
+mgcore = { path = "../mgcore" }

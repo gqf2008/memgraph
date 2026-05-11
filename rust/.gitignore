@@ -1,0 +1,4 @@
+/target
+*.profraw
+*.profdata
+crates/memgraph_data/

@@ -1,5 +1,0 @@
-customWorkloads:
-  tests:
-    - name: rpc-timeout
-      script: "ha/workloads/rpc_timeout/workload.py"
-      timeout_min: 10

@@ -1,5 +1,0 @@
-customWorkloads:
-  tests:
-    - name: restarting-instances-workload
-      script: "ha/workloads/restarting_instances/workload.py"
-      timeout_min: 120

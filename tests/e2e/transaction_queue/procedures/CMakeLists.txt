@@ -1,1 +1,0 @@
-copy_e2e_python_files(transaction_queue infinite_query.py)

@@ -1,0 +1,13 @@
+[package]
+name = "mgauth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mgcore.workspace = true
+mgparser = { path = "../mgparser" }
+serde.workspace = true
+tracing.workspace = true
+argon2.workspace = true
+rand.workspace = true

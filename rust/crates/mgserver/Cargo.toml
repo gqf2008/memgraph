@@ -1,0 +1,48 @@
+[package]
+name = "mgserver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "memgraph-rs"
+path = "src/main.rs"
+
+[dependencies]
+mgcore = { path = "../mgcore" }
+mgstorage = { path = "../mgstorage" }
+mgdurability = { path = "../mgdurability" }
+mgparser = { path = "../mgparser" }
+mginterp = { path = "../mginterp" }
+mgbolt = { path = "../mgbolt" }
+mgcatalog = { path = "../mgcatalog" }
+mgplanner = { path = "../mgplanner" }
+mgglue = { path = "../mgglue" }
+mgsystem = { path = "../mgsystem" }
+mgdbms = { path = "../mgdbms" }
+mgauth = { path = "../mgauth" }
+mgtelemetry = { path = "../mgtelemetry" }
+mgaudit = { path = "../mgaudit" }
+mgrepl = { path = "../mgrepl" }
+mgcoord = { path = "../mgcoord" }
+mgrpc = { path = "../mgrpc" }
+openraft = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+mimalloc = { workspace = true }
+ctrlc = "3.4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+http-body = { workspace = true }
+bytes = { workspace = true }
+arrow = { version = "58", optional = true }
+parquet = { version = "58", optional = true }
+
+[features]
+parquet-import = ["arrow", "parquet"]

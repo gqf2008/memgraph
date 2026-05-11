@@ -1,0 +1,11 @@
+[package]
+name = "mgvector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rand = "0.8"
+serde = { workspace = true }
+bincode = "1"

@@ -1,0 +1,38 @@
+[package]
+name = "benches"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mgcore = { path = "../crates/mgcore" }
+mgstorage = { path = "../crates/mgstorage" }
+mginterp = { path = "../crates/mginterp" }
+mgparser = { path = "../crates/mgparser" }
+mgcatalog = { path = "../crates/mgcatalog" }
+mgplanner = { path = "../crates/mgplanner" }
+mgvector = { path = "../crates/mgvector" }
+mgbolt = { path = "../crates/mgbolt" }
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports"] }
+
+[[bench]]
+name = "query_bench"
+harness = false
+
+[[bench]]
+name = "parser_bench"
+harness = false
+
+[[bench]]
+name = "storage_bench"
+harness = false
+
+[[bench]]
+name = "vector_bench"
+harness = false
+
+[[bench]]
+name = "bolt_bench"
+harness = false

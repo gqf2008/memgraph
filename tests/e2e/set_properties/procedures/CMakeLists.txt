@@ -1,1 +1,0 @@
-copy_set_properties_e2e_python_files(set_properties_module.py)

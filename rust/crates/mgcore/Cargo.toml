@@ -1,0 +1,12 @@
+[package]
+name = "mgcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mgslk = { path = "../mgslk" }
+serde = { workspace = true }
+
+[dev-dependencies]
