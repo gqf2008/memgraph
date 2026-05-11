@@ -1,7 +1,7 @@
 args: &args
   - "--bolt-port"
   - "7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--also-log-to-stderr"
 
 mock_setup_queries: &mock_setup_queries
@@ -87,7 +87,7 @@ compare_mock_in_memory_cluster: &compare_mock_in_memory_cluster
 compare_mock_disk_cluster: &compare_mock_disk_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE", "--also-log-to-stderr"]
+      args: ["--bolt-port", "7687", "--log-filter=trace", "--also-log-to-stderr"]
       log_file: "test-compare-mock-e2e.log"
       setup_queries:
         - "STORAGE MODE ON_DISK_TRANSACTIONAL"

@@ -46,31 +46,31 @@ def test_name(request):
 def get_instances_description(test_name: str):
     return {
         "replica_1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
             "setup_queries": [],
         },
         "replica_2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
             "setup_queries": [],
         },
         "replica_3": {
-            "args": ["--bolt-port", "7690", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7690", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica3.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica3",
             "setup_queries": [],
         },
         "replica_4": {
-            "args": ["--bolt-port", "7691", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7691", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica4.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica4",
             "setup_queries": [],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [],
@@ -549,7 +549,7 @@ def test_basic_recovery(recover_data_on_startup, connection, test_name):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -561,7 +561,7 @@ def test_basic_recovery(recover_data_on_startup, connection, test_name):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -573,7 +573,7 @@ def test_basic_recovery(recover_data_on_startup, connection, test_name):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 f"--data-recovery-on-startup={recover_data_on_startup}",
             ],
@@ -587,7 +587,7 @@ def test_basic_recovery(recover_data_on_startup, connection, test_name):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -599,7 +599,7 @@ def test_basic_recovery(recover_data_on_startup, connection, test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--replication-restore-state-on-startup=true",
             ],
@@ -965,7 +965,7 @@ def test_replication_role_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -976,7 +976,7 @@ def test_replication_role_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--replication-restore-state-on-startup=true",
             ],
@@ -1100,13 +1100,13 @@ def test_conflict_at_startup(connection, test_name):
 
     CONFIGURATION = {
         "main_1": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace"],
             "setup_queries": [],
             "log_file": f"{get_logs_path(file, test_name)}/main1.log",
             "data_directory": f"{get_data_path(file, test_name)}/main1",
         },
         "main_2": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/main2.log",
             "data_directory": f"{get_data_path(file, test_name)}/main2",
             "setup_queries": [],
@@ -1131,13 +1131,13 @@ def test_basic_recovery_when_replica_is_kill_when_main_is_down(test_name):
 
     CONFIGURATION = {
         "replica_1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE", "--replication-restore-state-on-startup=true"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace", "--replication-restore-state-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
         },
         "replica_2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE", "--replication-restore-state-on-startup=true"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace", "--replication-restore-state-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
@@ -1146,7 +1146,7 @@ def test_basic_recovery_when_replica_is_kill_when_main_is_down(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--replication-restore-state-on-startup=true",
             ],
@@ -1235,12 +1235,12 @@ def test_async_replication_when_main_is_killed(test_name):
         # 0/
         CONFIGURATION = {
             "async_replica": {
-                "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+                "args": ["--bolt-port", "7688", "--log-filter=trace"],
                 "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
                 "log_file": f"{get_logs_path(file, test_name)}/async_replica.log",
             },
             "main": {
-                "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+                "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
                 "setup_queries": [],
                 "log_file": f"{get_logs_path(file, test_name)}/main.log",
             },
@@ -1311,12 +1311,12 @@ def test_sync_replication_when_main_is_killed(test_name):
         # 0/
         CONFIGURATION = {
             "sync_replica": {
-                "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+                "args": ["--bolt-port", "7688", "--log-filter=trace"],
                 "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
                 "log_file": f"{get_logs_path(file, test_name)}/sync_replica.log",
             },
             "main": {
-                "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+                "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
                 "setup_queries": [],
                 "log_file": f"{get_logs_path(file, test_name)}/main.log",
             },
@@ -1358,17 +1358,17 @@ def test_attempt_to_write_data_on_main_when_async_replica_is_down():
 
     CONFIGURATION = {
         "async_replica1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": "async_replica1.log",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
         },
         "async_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": "async_replica2.log",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": "main.log",
             "setup_queries": [
                 "REGISTER REPLICA async_replica1 ASYNC TO '127.0.0.1:10001';",
@@ -1452,8 +1452,8 @@ def test_attempt_to_write_data_on_main_when_sync_replica_is_down(connection, tes
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -1463,13 +1463,13 @@ def test_attempt_to_write_data_on_main_when_sync_replica_is_down(connection, tes
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level", "TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter", "trace"],
             "setup_queries": [],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             # need to do it manually
             "setup_queries": [],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
@@ -1593,19 +1593,19 @@ def test_attempt_to_create_indexes_on_main_when_async_replica_is_down(connection
 
     CONFIGURATION = {
         "async_replica1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/async_replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/async_replica1",
             "setup_queries": [],
         },
         "async_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/async_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/async_replica2",
             "setup_queries": [],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [],
@@ -1699,7 +1699,7 @@ def test_attempt_to_create_indexes_on_main_when_sync_replica_is_down(connection,
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -1708,13 +1708,13 @@ def test_attempt_to_create_indexes_on_main_when_sync_replica_is_down(connection,
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             # Need to do it manually
@@ -1843,8 +1843,8 @@ def test_trigger_on_create_before_commit_with_offline_sync_replica(connection, t
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -1854,13 +1854,13 @@ def test_trigger_on_create_before_commit_with_offline_sync_replica(connection, t
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             # Need to do it manually since we kill replica
@@ -1962,7 +1962,7 @@ def test_trigger_on_update_before_commit_with_offline_sync_replica(connection, t
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -1972,13 +1972,13 @@ def test_trigger_on_update_before_commit_with_offline_sync_replica(connection, t
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [],
@@ -2084,7 +2084,7 @@ def test_trigger_on_delete_before_commit_with_offline_sync_replica(connection, t
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -2094,13 +2094,13 @@ def test_trigger_on_delete_before_commit_with_offline_sync_replica(connection, t
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [],
@@ -2210,7 +2210,7 @@ def test_trigger_on_create_before_and_after_commit_with_offline_sync_replica(con
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -2220,13 +2220,13 @@ def test_trigger_on_create_before_and_after_commit_with_offline_sync_replica(con
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "setup_queries": [],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -2333,7 +2333,7 @@ def test_triggers_on_create_before_commit_with_offline_sync_replica(connection, 
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -2343,13 +2343,13 @@ def test_triggers_on_create_before_commit_with_offline_sync_replica(connection, 
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica1",
         },
         "sync_replica2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
             "log_file": f"{get_logs_path(file, test_name)}/sync_replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/sync_replica2",
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "setup_queries": [],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -2454,12 +2454,12 @@ def test_replication_not_messed_up_by_ShowIndexInfo(connection):
 
     BASIC_MEMGRAPH_INSTANCES_DESCRIPTION = {
         "replica_1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": "replica1.log",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace"],
             "log_file": "main.log",
             "setup_queries": [
                 "REGISTER REPLICA replica_1 ASYNC TO '127.0.0.1:10001';",

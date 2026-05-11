@@ -5,7 +5,7 @@ schema_setup: &schema_setup
         [
           "--bolt-port",
           "7687",
-          "--log-level=TRACE",
+          "--log-filter=trace",
           "--schema-info-enabled",
         ]
       log_file: "schema_info.log"

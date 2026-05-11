@@ -36,7 +36,7 @@ def test_durability_with_vector_index_basic(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -107,7 +107,7 @@ def test_durability_with_vector_index_label_changes(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -177,7 +177,7 @@ def test_durability_with_vector_index_property_changes(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -245,7 +245,7 @@ def test_durability_with_two_vector_indices(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -324,7 +324,7 @@ def test_durability_with_two_vector_indices_drop_one(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -405,7 +405,7 @@ def test_durability_with_vector_index_drop_single_index(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -488,7 +488,7 @@ def test_durability_with_two_vector_indices_remove_one_label(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -551,7 +551,7 @@ def test_durability_with_two_vector_indices_remove_both_labels(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -615,7 +615,7 @@ def test_durability_with_vector_index_nodes_before_index_creation(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -710,7 +710,7 @@ def test_durability_with_vector_index_snapshot_and_wal(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -769,7 +769,7 @@ def test_durability_creating_index_after_vector_already_in_another_index(connect
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,

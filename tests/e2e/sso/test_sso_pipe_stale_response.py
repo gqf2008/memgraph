@@ -40,7 +40,7 @@ def get_instances(test_name: str):
         INSTANCE_NAME: {
             "args": [
                 "--bolt-port=7687",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 f"--auth-module-timeout-ms={AUTH_MODULE_TIMEOUT_MS}",
             ],

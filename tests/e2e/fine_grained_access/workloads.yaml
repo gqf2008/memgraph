@@ -1,7 +1,7 @@
 args: &args
   - "--bolt-port"
   - "7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 base_setup_queries: &base_setup_queries
   # Create a role before the first user so builtin role creation (admin/readwrite/readonly) is suppressed.

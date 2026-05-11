@@ -67,19 +67,19 @@ def show_replicas_func(cursor):
 def _instances(test_name):
     return {
         "replica_1": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
             "setup_queries": [f"SET REPLICATION ROLE TO REPLICA WITH PORT {REPLICATION_PORTS['replica_1']};"],
         },
         "replica_2": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['replica_2']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['replica_2']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
             "setup_queries": [f"SET REPLICATION ROLE TO REPLICA WITH PORT {REPLICATION_PORTS['replica_2']};"],
         },
         "main": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [
@@ -99,7 +99,7 @@ def _instances_with_recovery(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -110,7 +110,7 @@ def _instances_with_recovery(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
             ],
@@ -121,7 +121,7 @@ def _instances_with_recovery(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--replication-restore-state-on-startup=true",
             ],

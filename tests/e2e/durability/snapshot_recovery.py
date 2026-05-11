@@ -63,7 +63,7 @@ def memgraph_instances(dir):
     return {
         "default": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=false",
                 "--storage-snapshot-interval-sec=1000",
                 "--storage-wal-enabled=true",
@@ -75,7 +75,7 @@ def memgraph_instances(dir):
         },
         "recover_on_startup": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--storage-snapshot-interval-sec=1000",
                 "--storage-wal-enabled=true",
@@ -223,7 +223,7 @@ def test_disk_files_startup_vacuum(test_name):
     instances = {
         "default": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--storage-snapshot-interval-sec=1000",
                 "--storage-wal-enabled=true",
@@ -251,7 +251,7 @@ def test_disable_old_dir(test_name, global_snapshot):
     instances = {
         "default": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--storage-snapshot-interval-sec=1000",
                 "--storage-wal-enabled=true",

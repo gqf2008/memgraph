@@ -82,7 +82,7 @@ def test_durability_set_all_types(test_name):
 
     instance_desc = {
         "main": {
-            "args": ["--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": "main_durability_set_all.log",
             "data_directory": data_directory,
         },
@@ -109,7 +109,7 @@ def test_durability_delete_all_types(test_name):
 
     instance_desc = {
         "main": {
-            "args": ["--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": "main_durability_delete_all.log",
             "data_directory": data_directory,
         },
@@ -138,7 +138,7 @@ def test_durability_snapshot_all_types(test_name):
     instance_desc = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--storage-snapshot-on-exit=true",
                 "--storage-wal-enabled=false",

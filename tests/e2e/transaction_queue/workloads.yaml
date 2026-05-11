@@ -1,7 +1,7 @@
 args: &args
   - "--bolt-port"
   - "7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 test_transaction_queue_in_memory_cluster: &test_transaction_queue_in_memory_cluster
   cluster:

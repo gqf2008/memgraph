@@ -1,7 +1,7 @@
 args: &args
   - "--bolt-port"
   - "7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 execution_query_modules_cluster: &execution_query_modules_cluster
   cluster:

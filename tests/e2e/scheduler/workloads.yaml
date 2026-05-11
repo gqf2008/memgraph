@@ -5,8 +5,8 @@ pq_setup: &pq_setup
         [
           "--bolt-port",
           "7687",
-          "--log-level",
-          "TRACE",
+          "--log-filter",
+          "trace",
           "--scheduler",
           "priority_queue",
           "--bolt-num-workers",

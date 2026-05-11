@@ -62,8 +62,8 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
             ],
@@ -75,8 +75,8 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
             ],
@@ -88,8 +88,8 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
             ],
@@ -101,7 +101,7 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--management-port=10121",
@@ -116,7 +116,7 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--management-port=10122",
@@ -131,7 +131,7 @@ def get_instances_description_no_setup(test_name: str):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--management-port=10123",
@@ -175,8 +175,8 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
             ],
@@ -188,8 +188,8 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
             ],
@@ -201,8 +201,8 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
             ],
@@ -214,7 +214,7 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname",
@@ -229,7 +229,7 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--coordinator-hostname",
@@ -244,7 +244,7 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--coordinator-hostname",
@@ -259,7 +259,7 @@ def get_instances_description_no_setup_4_coords(test_name: str):
             "args": [
                 "--bolt-port",
                 "7693",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=4",
                 "--coordinator-port=10114",
                 "--coordinator-hostname",
@@ -997,8 +997,8 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
             ],
@@ -1010,8 +1010,8 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
             ],
@@ -1023,8 +1023,8 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
             ],
@@ -1036,7 +1036,7 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--management-port=10121",
@@ -1050,7 +1050,7 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--management-port=10122",
@@ -1064,7 +1064,7 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--management-port=10123",
@@ -1078,7 +1078,7 @@ def test_registering_4_coords(test_name):
             "args": [
                 "--bolt-port",
                 "7693",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=4",
                 "--coordinator-port=10114",
                 "--management-port=10124",
@@ -1134,8 +1134,8 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
             ],
@@ -1147,8 +1147,8 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
             ],
@@ -1160,8 +1160,8 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
             ],
@@ -1173,7 +1173,7 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname",
@@ -1188,7 +1188,7 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--coordinator-hostname",
@@ -1203,7 +1203,7 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--coordinator-hostname",
@@ -1218,7 +1218,7 @@ def test_registering_coord_log_store(test_name):
             "args": [
                 "--bolt-port",
                 "7693",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=4",
                 "--coordinator-port=10114",
                 "--coordinator-hostname",
@@ -1274,7 +1274,7 @@ def test_registering_coord_log_store(test_name):
     for i in range(4, 7):
         instance_name = f"instance_{i}"
         args_desc = [
-            "--log-level=TRACE",
+            "--log-filter=trace",
         ]
 
         bolt_port = f"--bolt-port={bolt_port_id}"
@@ -1753,7 +1753,7 @@ def test_coordinator_gets_info_on_other_coordinators(test_name):
             "args": [
                 "--bolt-port",
                 "7693",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=4",
                 "--coordinator-port=10114",
                 "--management-port=10124",
@@ -2748,8 +2748,8 @@ def test_register_instance_while_no_main(test_name):
             "args": [
                 "--bolt-port",
                 "7693",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10014",
             ],

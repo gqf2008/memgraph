@@ -50,8 +50,8 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
             ],
@@ -63,8 +63,8 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
             ],
@@ -76,8 +76,8 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
             ],
@@ -89,7 +89,7 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname=localhost",
@@ -103,7 +103,7 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--coordinator-hostname=localhost",
@@ -117,7 +117,7 @@ def get_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--coordinator-hostname=localhost",
@@ -136,8 +136,8 @@ def get_instances_description_no_coord(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
                 "--data-recovery-on-startup=false",
@@ -151,8 +151,8 @@ def get_instances_description_no_coord(test_name: str):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
                 "--data-recovery-on-startup=false",
@@ -166,8 +166,8 @@ def get_instances_description_no_coord(test_name: str):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
                 "--data-recovery-on-startup=false",
@@ -181,7 +181,7 @@ def get_instances_description_no_coord(test_name: str):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname=localhost",
@@ -195,7 +195,7 @@ def get_instances_description_no_coord(test_name: str):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--coordinator-hostname=localhost",
@@ -749,7 +749,7 @@ def test_register_one_coord_with_env_vars(test_name):
     interactive_mg_runner.start(
         {
             "coordinator_3": {
-                "args": ["--log-level=TRACE", "--bolt-port=7692"],
+                "args": ["--log-filter=trace", "--bolt-port=7692"],
                 "log_file": f"{get_logs_path(file, test_name)}/coordinator_3.log",
                 "data_directory": f"{get_data_path(file, test_name)}/coordinator_3",
                 "setup_queries": [],
@@ -847,8 +847,8 @@ def test_register_one_data_with_env_vars(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
                 "--data-recovery-on-startup=false",
@@ -862,8 +862,8 @@ def test_register_one_data_with_env_vars(test_name):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
                 "--data-recovery-on-startup=false",
@@ -877,7 +877,7 @@ def test_register_one_data_with_env_vars(test_name):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname",
@@ -892,7 +892,7 @@ def test_register_one_data_with_env_vars(test_name):
             "args": [
                 "--bolt-port",
                 "7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--coordinator-hostname",
@@ -907,7 +907,7 @@ def test_register_one_data_with_env_vars(test_name):
             "args": [
                 "--bolt-port",
                 "7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--coordinator-hostname",
@@ -928,8 +928,8 @@ def test_register_one_data_with_env_vars(test_name):
         {
             "instance_3": {
                 "args": [
-                    "--log-level",
-                    "TRACE",
+                    "--log-filter",
+                    "trace",
                     "--data-recovery-on-startup=false",
                     "--replication-restore-state-on-startup=true",
                     "--bolt-port=7689",
@@ -1026,7 +1026,7 @@ def test_register_one_coord_with_env_vars_no_instances_alive_on_start(test_name)
 
     coordinator_3_description = {
         "coordinator_3": {
-            "args": ["--log-level=TRACE", "--bolt-port=7692"],
+            "args": ["--log-filter=trace", "--bolt-port=7692"],
             "log_file": f"{get_logs_path(file, test_name)}/coordinator_3.log",
             "data_directory": f"{get_data_path(file, test_name)}/coordinator_3",
             "setup_queries": [],

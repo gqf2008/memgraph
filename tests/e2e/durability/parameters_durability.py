@@ -29,12 +29,12 @@ FILE = "parameters_durability"
 def instances(data_dir):
     return {
         "no_recovery": {
-            "args": ["--log-level=TRACE", "--data-recovery-on-startup=false"],
+            "args": ["--log-filter=trace", "--data-recovery-on-startup=false"],
             "log_file": "parameters_no_recovery.log",
             "data_directory": data_dir,
         },
         "recovery": {
-            "args": ["--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": "parameters_recovery.log",
             "data_directory": data_dir,
         },

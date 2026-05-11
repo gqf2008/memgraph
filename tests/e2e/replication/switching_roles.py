@@ -64,7 +64,7 @@ def test_switch_main_after_local_snapshot(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['instance2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/instance2.log",
             "setup_queries": [
@@ -75,7 +75,7 @@ def test_switch_main_after_local_snapshot(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['instance1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/instance1.log",
             "setup_queries": [

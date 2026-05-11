@@ -31,11 +31,11 @@ if str(E2E_DIR) not in sys.path:
 
 
 def _find_project_root(start_path: Path) -> Path | None:
-    """Find the memgraph project root by looking for CMakeLists.txt and src/."""
-    # First, try to find by marker files
+    """Find the memgraph project root by looking for rust/Cargo.toml."""
+    # First, try to find by marker file (Rust workspace)
     current = start_path
     for _ in range(10):  # Limit search depth
-        if (current / "CMakeLists.txt").exists() and (current / "src").is_dir():
+        if (current / "rust" / "Cargo.toml").exists():
             return current
         parent = current.parent
         if parent == current:
@@ -55,16 +55,21 @@ def _find_project_root(start_path: Path) -> Path | None:
     return None
 
 
-def _find_build_dir(project_root: Path) -> Path:
-    """Find the build directory."""
-    # Standard build location
+def _find_rust_binary(project_root: Path) -> Path | None:
+    """Find the Rust memgraph-rs binary (release preferred, then debug)."""
+    release = project_root / "rust" / "target" / "release" / "memgraph-rs"
+    if release.exists():
+        return release
+    debug = project_root / "rust" / "target" / "debug" / "memgraph-rs"
+    if debug.exists():
+        return debug
+    # Legacy C++ binary fallback
     build_dir = project_root / "build"
     if (build_dir / "memgraph").exists():
-        return build_dir
-    # Maybe we're already in the build tree
+        return build_dir / "memgraph"
     if (project_root / "memgraph").exists():
-        return project_root
-    return build_dir
+        return project_root / "memgraph"
+    return None
 
 
 def _setup_interactive_mg_runner():
@@ -84,12 +89,10 @@ def _setup_interactive_mg_runner():
     if project_root is None:
         return  # Could not find project root
 
-    build_dir = _find_build_dir(project_root)
-    memgraph_binary = build_dir / "memgraph"
-
-    if memgraph_binary.exists():
+    memgraph_binary = _find_rust_binary(project_root)
+    if memgraph_binary is not None:
         interactive_mg_runner.PROJECT_DIR = str(project_root)
-        interactive_mg_runner.BUILD_DIR = str(build_dir)
+        interactive_mg_runner.BUILD_DIR = str(project_root / "build")
         interactive_mg_runner.MEMGRAPH_BINARY = str(memgraph_binary)
 
 

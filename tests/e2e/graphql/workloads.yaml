@@ -1,8 +1,8 @@
 args: &args
  - "--bolt-port"
  - "7687"
- - "--log-level"
- - "TRACE"
+ - "--log-filter"
+ - "trace"
  - "--query-callable-mappings-path"
  - "graphql/callable_alias_mapping.json"
 

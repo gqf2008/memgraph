@@ -60,7 +60,7 @@ INSTANCE = {
             "--bolt-port",
             str(BOLT_PORT),
             "--storage-gc-cycle-sec=180",
-            "--log-level=WARNING",
+            "--log-filter=warn",
         ],
         "log_file": "index-cleanup-memory-e2e.log",
         "setup_queries": [],

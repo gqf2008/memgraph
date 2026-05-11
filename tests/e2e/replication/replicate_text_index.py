@@ -65,7 +65,7 @@ def test_text_index_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
             ],
@@ -78,7 +78,7 @@ def test_text_index_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
             ],
@@ -91,7 +91,7 @@ def test_text_index_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
             ],

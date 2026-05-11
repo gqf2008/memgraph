@@ -10,7 +10,7 @@
 # licenses/APL.txt.
 
 # In order to check the working correctness of the SHOW CONFIG command, a couple of configuration flags has been passed to the testing instance. These are:
-# "--log-level=TRACE", "--storage-properties-on-edges=True", "--storage-snapshot-interval-sec", "300", "--storage-wal-enabled=True"
+# "--log-filter=trace", "--storage-properties-on-edges=True", "--storage-snapshot-interval-sec", "300", "--storage-wal-enabled=True"
 # If you wish to modify these, update the startup_config_dict and workloads.yaml !
 
 
@@ -104,8 +104,8 @@ startup_config_dict = {
     "log_retention_days": ("35", "35", "Controls for how many days will daily log files be preserved."),
     "nuraft_log_file": ("", "", "Path to the file where NuRaft logs are saved."),
     "log_level": (
-        "WARNING",
-        "TRACE",
+        "warn",
+        "trace",
         "Minimum log level. Allowed values: TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL",
     ),
     "memory_limit": (

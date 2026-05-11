@@ -2,3 +2,4 @@
 *.profraw
 *.profdata
 crates/memgraph_data/
+memgraph_data/

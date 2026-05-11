@@ -1,7 +1,7 @@
 args: &args
   - "--bolt-port"
   - "7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 nullif_in_memory_cluster: &nullif_in_memory_cluster
   cluster:

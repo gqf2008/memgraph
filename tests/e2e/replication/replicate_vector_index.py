@@ -56,7 +56,7 @@ def create_instances_description(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/replica1.log",
             "setup_queries": [
@@ -67,7 +67,7 @@ def create_instances_description(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/replica2.log",
             "setup_queries": [
@@ -78,7 +78,7 @@ def create_instances_description(test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/main.log",
             "setup_queries": [

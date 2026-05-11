@@ -34,7 +34,7 @@ def memgraph_instances(dir, mode="IN_MEMORY_TRANSACTIONAL"):
     return {
         "no_flags": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=false",
                 "--storage-wal-enabled=false",
@@ -48,7 +48,7 @@ def memgraph_instances(dir, mode="IN_MEMORY_TRANSACTIONAL"):
         },
         "sec_flag": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=false",
                 "--storage-snapshot-interval-sec=1",
@@ -61,7 +61,7 @@ def memgraph_instances(dir, mode="IN_MEMORY_TRANSACTIONAL"):
         },
         "interval_flag": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=false",
                 "--storage-snapshot-interval-sec=0",
@@ -76,7 +76,7 @@ def memgraph_instances(dir, mode="IN_MEMORY_TRANSACTIONAL"):
         },
         "both_flags": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=false",
                 "--storage-snapshot-interval-sec=1",

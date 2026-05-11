@@ -37,7 +37,7 @@ INSTANCE_200MB = {
             str(BOLT_PORT),
             "--memory-limit=50",
             "--storage-gc-cycle-sec=180",
-            "--log-level=WARNING",
+            "--log-filter=warn",
         ],
         "log_file": "vector-index-memory-e2e.log",
         "setup_queries": [],

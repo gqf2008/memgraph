@@ -39,8 +39,8 @@ def get_memgraph_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7688",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10011",
                 "--replication-restore-state-on-startup=true",
@@ -54,8 +54,8 @@ def get_memgraph_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7689",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10012",
                 "--replication-restore-state-on-startup=true",
@@ -69,8 +69,8 @@ def get_memgraph_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--management-port",
                 "10013",
                 "--replication-restore-state-on-startup=true",
@@ -84,7 +84,7 @@ def get_memgraph_instances_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--coordinator-hostname",

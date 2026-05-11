@@ -127,7 +127,7 @@ def run(args):
                 interactive_mg_runner.start_all(workload["cluster"], procdir, keep_directories=False, gdb_port=gdb_port)
 
             if args.debug:
-                hosts = subprocess.check_output("pgrep memgraph", shell=True)
+                hosts = subprocess.check_output("pgrep memgraph-rs", shell=True)
                 print(f"PID: {hosts}")
                 time.sleep(10)
 

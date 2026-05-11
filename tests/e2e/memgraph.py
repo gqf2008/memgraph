@@ -25,7 +25,16 @@ import mgclient
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
 BUILD_DIR = os.path.join(PROJECT_DIR, "build")
-MEMGRAPH_BINARY = os.path.join(BUILD_DIR, "memgraph")
+
+# Detect Rust binary (release preferred, then debug, then fallback to legacy C++ binary)
+_RUST_RELEASE = os.path.join(PROJECT_DIR, "rust", "target", "release", "memgraph-rs")
+_RUST_DEBUG = os.path.join(PROJECT_DIR, "rust", "target", "debug", "memgraph-rs")
+if os.path.exists(_RUST_RELEASE):
+    MEMGRAPH_BINARY = _RUST_RELEASE
+elif os.path.exists(_RUST_DEBUG):
+    MEMGRAPH_BINARY = _RUST_DEBUG
+else:
+    MEMGRAPH_BINARY = os.path.join(BUILD_DIR, "memgraph")
 SIGNAL_SIGTERM = 15
 
 log = logging.getLogger("memgraph.tests.e2e")
@@ -220,14 +229,16 @@ class MemgraphInstanceRunner:
         self.args = [replace_paths(arg) for arg in self.args]
 
         storage_snapshot_on_exit = "true" if storage_snapshot_on_exit else "false"
-        args_mg = [
-            self.binary_path,
+        # Rust binary handles WAL/snapshots automatically; only add C++ flags for legacy binary
+        is_rust_binary = "memgraph-rs" in self.binary_path
+        cpp_flags = [
             "--storage-wal-enabled",
             "--storage-snapshot-interval-sec",
             "300",
             "--storage-properties-on-edges",
             f"--storage-snapshot-on-exit={storage_snapshot_on_exit}",
-        ] + self.args
+        ] if not is_rust_binary else []
+        args_mg = [self.binary_path] + cpp_flags + self.args
 
         if bolt_port:
             self.bolt_port = bolt_port

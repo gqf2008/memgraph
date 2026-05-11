@@ -5,7 +5,7 @@ monitoring_port: &monitoring_port "7444"
 template_cluster: &template_cluster
   cluster:
     monitoring:
-      args: ["--bolt-port=7687", "--log-level=TRACE"]
+      args: ["--bolt-port=7687", "--log-filter=trace"]
       log_file: "monitoring-websocket-e2e.log"
 template_cluster_ssl: &template_cluster_ssl
   cluster:
@@ -16,7 +16,7 @@ template_cluster_ssl: &template_cluster_ssl
           *bolt_port,
           "--monitoring-port",
           *monitoring_port,
-          "--log-level=TRACE",
+          "--log-filter=trace",
           "--bolt-cert-file",
           *cert_file,
           "--bolt-key-file",

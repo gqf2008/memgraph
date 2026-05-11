@@ -40,8 +40,8 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7687",
-            "--log-level",
-            "TRACE",
+            "--log-filter",
+            "trace",
             "--management-port",
             "10011",
             "--also-log-to-stderr",
@@ -58,8 +58,8 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7688",
-            "--log-level",
-            "TRACE",
+            "--log-filter",
+            "trace",
             "--management-port",
             "10012",
             "--also-log-to-stderr",
@@ -76,8 +76,8 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7689",
-            "--log-level",
-            "TRACE",
+            "--log-filter",
+            "trace",
             "--management-port",
             "10013",
             "--also-log-to-stderr",
@@ -94,7 +94,7 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7690",
-            "--log-level=TRACE",
+            "--log-filter=trace",
             "--coordinator-id=1",
             "--coordinator-port=10111",
             "--coordinator-hostname=localhost",
@@ -108,7 +108,7 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7691",
-            "--log-level=TRACE",
+            "--log-filter=trace",
             "--coordinator-id=2",
             "--coordinator-port=10112",
             "--coordinator-hostname=localhost",
@@ -122,7 +122,7 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7692",
-            "--log-level=TRACE",
+            "--log-filter=trace",
             "--coordinator-id=3",
             "--coordinator-port=10113",
             "--also-log-to-stderr",

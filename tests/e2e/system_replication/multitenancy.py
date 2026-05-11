@@ -59,8 +59,8 @@ def create_memgraph_instances_with_role_recovery(test_name: str, data_recovery: 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 f"--data-recovery-on-startup={data_recovery_flag}",
             ],
@@ -71,7 +71,7 @@ def create_memgraph_instances_with_role_recovery(test_name: str, data_recovery: 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup=true",
                 f"--data-recovery-on-startup={data_recovery_flag}",
             ],
@@ -82,7 +82,7 @@ def create_memgraph_instances_with_role_recovery(test_name: str, data_recovery: 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -118,7 +118,7 @@ def get_instances_with_recovery(test_name: str):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup",
                 "--data-recovery-on-startup",
             ],
@@ -129,7 +129,7 @@ def get_instances_with_recovery(test_name: str):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup",
                 "--data-recovery-on-startup",
             ],
@@ -140,7 +140,7 @@ def get_instances_with_recovery(test_name: str):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--replication-restore-state-on-startup",
                 "--data-recovery-on-startup",
             ],
@@ -247,7 +247,7 @@ def test_manual_databases_create_multitenancy_replication(connection, test_name)
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -261,7 +261,7 @@ def test_manual_databases_create_multitenancy_replication(connection, test_name)
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -275,7 +275,7 @@ def test_manual_databases_create_multitenancy_replication(connection, test_name)
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -351,7 +351,7 @@ def test_manual_databases_create_multitenancy_replication_branching(connection, 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -369,7 +369,7 @@ def test_manual_databases_create_multitenancy_replication_branching(connection, 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -387,7 +387,7 @@ def test_manual_databases_create_multitenancy_replication_branching(connection, 
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -439,7 +439,7 @@ def test_manual_databases_create_multitenancy_replication_dirty_replica(connecti
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -454,7 +454,7 @@ def test_manual_databases_create_multitenancy_replication_dirty_replica(connecti
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -469,7 +469,7 @@ def test_manual_databases_create_multitenancy_replication_dirty_replica(connecti
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -516,7 +516,7 @@ def test_manual_databases_create_multitenancy_replication_main_behind(connection
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -531,7 +531,7 @@ def test_manual_databases_create_multitenancy_replication_main_behind(connection
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -546,7 +546,7 @@ def test_manual_databases_create_multitenancy_replication_main_behind(connection
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -672,7 +672,7 @@ def test_automatic_databases_multitenancy_replication_predefined(connection, tes
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -684,7 +684,7 @@ def test_automatic_databases_multitenancy_replication_predefined(connection, tes
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -742,7 +742,7 @@ def test_automatic_databases_create_multitenancy_replication_dirty_main(connecti
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -754,7 +754,7 @@ def test_automatic_databases_create_multitenancy_replication_dirty_main(connecti
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -1927,7 +1927,7 @@ def test_db_memory_tracking_cross_db_replication_isolation(connection, test_name
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -1941,7 +1941,7 @@ def test_db_memory_tracking_cross_db_replication_isolation(connection, test_name
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",

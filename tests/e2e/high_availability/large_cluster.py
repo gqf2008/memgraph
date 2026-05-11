@@ -62,7 +62,7 @@ def get_instances_description_no_setup(test_name: str):
         result[f"instance_{i}"] = {
             "args": [
                 f"--bolt-port={INSTANCE_BOLT_PORT_START + i - 1}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 f"--management-port={INSTANCE_MANAGEMENT_PORT_START + i - 1}",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/instance_{i}.log",
@@ -75,7 +75,7 @@ def get_instances_description_no_setup(test_name: str):
         result[f"coordinator_{i}"] = {
             "args": [
                 f"--bolt-port={COORDINATOR_BOLT_PORT_START + i - 1}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 f"--coordinator-id={i}",
                 f"--coordinator-port={COORDINATOR_PORT_START + i - 1}",
                 f"--management-port={COORDINATOR_MANAGEMENT_PORT_START + i - 1}",

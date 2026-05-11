@@ -45,13 +45,13 @@ def test_name(request):
 def _instances(test_name):
     return {
         "replica_1": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
             "setup_queries": [f"SET REPLICATION ROLE TO REPLICA WITH PORT {REPLICATION_PORTS['replica_1']};"],
         },
         "main": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
             "setup_queries": [

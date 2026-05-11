@@ -1,7 +1,7 @@
 enterprise_query_modules_cluster: &enterprise_query_modules_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "enterprise_query_modules.log"
       setup_queries: []
       validation_queries: []

@@ -5,7 +5,7 @@ ttl_setup: &ttl_setup
         [
           "--bolt-port",
           "7687",
-          "--log-level=TRACE",
+          "--log-filter=trace",
         ]
       log_file: "time_to_live.log"
       setup_queries: []

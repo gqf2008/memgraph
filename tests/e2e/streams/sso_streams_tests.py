@@ -40,7 +40,7 @@ file = "test_sso_streams"
 def get_instances(test_name: str):
     return {
         INSTANCE_NAME: {
-            "args": ["--bolt-port=7687", "--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--bolt-port=7687", "--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": f"sso_streams/{file}/{test_name}/test_instance.log",
             "data_directory": f"sso_streams/{file}/{test_name}",
             "setup_queries": [],

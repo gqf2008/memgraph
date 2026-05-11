@@ -64,25 +64,25 @@ def get_instances_description(test_name: str):
     """Cluster: replica_1 and replica_2 SYNC, replica_3 ASYNC. Order: replicas first then main."""
     return {
         "replica_1": {
-            "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7688", "--log-filter=trace"],
             "log_file": f"{get_logs_path(FILE, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(FILE, test_name)}/replica1",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
         },
         "replica_2": {
-            "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7689", "--log-filter=trace"],
             "log_file": f"{get_logs_path(FILE, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(FILE, test_name)}/replica2",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
         },
         "replica_3": {
-            "args": ["--bolt-port", "7690", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7690", "--log-filter=trace"],
             "log_file": f"{get_logs_path(FILE, test_name)}/replica3.log",
             "data_directory": f"{get_data_path(FILE, test_name)}/replica3",
             "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10003;"],
         },
         "main": {
-            "args": ["--bolt-port", "7687", "--log-level=TRACE"],
+            "args": ["--bolt-port", "7687", "--log-filter=trace"],
             "log_file": f"{get_logs_path(FILE, test_name)}/main.log",
             "data_directory": f"{get_data_path(FILE, test_name)}/main",
             "setup_queries": [

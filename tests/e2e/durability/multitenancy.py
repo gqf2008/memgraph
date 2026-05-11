@@ -31,8 +31,8 @@ def instance_description(test_name: str):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=true",
             ],
@@ -97,8 +97,8 @@ def test_recovery_on_startup_false_recovers_tenants_but_not_data(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=true",
                 "--storage-wal-enabled=true",
@@ -111,8 +111,8 @@ def test_recovery_on_startup_false_recovers_tenants_but_not_data(test_name):
             "args": [
                 "--bolt-port",
                 "7687",
-                "--log-level",
-                "TRACE",
+                "--log-filter",
+                "trace",
                 "--replication-restore-state-on-startup=true",
                 "--data-recovery-on-startup=false",
                 "--storage-wal-enabled=true",

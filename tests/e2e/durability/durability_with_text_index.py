@@ -48,7 +48,7 @@ def test_durability_with_text_index(test_name):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -188,7 +188,7 @@ def test_durability_with_text_index_recovery_disabled(test_name):
     MEMGRAPH_INSTANCE_DESCRIPTION_WITHOUT_RECOVERY = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=false",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -299,7 +299,7 @@ def test_durability_text_index_recovery_from_snapshot_only(test_name):
     MEMGRAPH_INSTANCE_DESCRIPTION = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -431,7 +431,7 @@ def test_partial_text_index_folder_deletion_nodes(test_name):
     MEMGRAPH_INSTANCE_DESCRIPTION = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,
@@ -513,7 +513,7 @@ def test_partial_text_index_folder_deletion_edges(test_name):
     MEMGRAPH_INSTANCE_DESCRIPTION = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--data-recovery-on-startup=true",
                 "--query-modules-directory",
                 interactive_mg_runner.MEMGRAPH_QUERY_MODULES_DIR,

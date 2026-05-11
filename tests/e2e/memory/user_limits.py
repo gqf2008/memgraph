@@ -163,7 +163,7 @@ def test_user_profile_setup(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -466,7 +466,7 @@ def test_user_profile_session_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -535,7 +535,7 @@ def test_user_profile_explicit_tx_memory_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -664,7 +664,7 @@ def test_user_profile_implicit_tx_memory_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -728,7 +728,7 @@ def test_user_profile_proc_memory_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 f"{interactive_mg_runner.BUILD_DIR}/tests/e2e/memory/procedures/",
             ],
@@ -837,7 +837,7 @@ def test_user_profile_local_proc_memory_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 f"{interactive_mg_runner.BUILD_DIR}/tests/e2e/memory/procedures/",
             ],
@@ -951,7 +951,7 @@ def test_user_profile_proc_w_limit_memory_tracking(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 f"{interactive_mg_runner.BUILD_DIR}/tests/e2e/memory/procedures/",
             ],
@@ -1034,7 +1034,7 @@ def test_user_profile_explicit_implicit_tx_memory_tracking(connection, test_name
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 f"{interactive_mg_runner.BUILD_DIR}/tests/e2e/memory/procedures/",
             ],
@@ -1109,7 +1109,7 @@ def test_user_profile_memory_tracking_with_gc(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORT}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--query-modules-directory",
                 f"{interactive_mg_runner.BUILD_DIR}/tests/e2e/memory/procedures/",
             ],

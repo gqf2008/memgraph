@@ -202,7 +202,7 @@ def test_auth_queries_on_replica(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -214,7 +214,7 @@ def test_auth_queries_on_replica(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -226,7 +226,7 @@ def test_auth_queries_on_replica(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -265,7 +265,7 @@ def test_manual_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -278,7 +278,7 @@ def test_manual_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -291,7 +291,7 @@ def test_manual_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -336,7 +336,7 @@ def test_env_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -348,7 +348,7 @@ def test_env_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -362,7 +362,7 @@ def test_env_users_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -415,7 +415,7 @@ def test_manual_roles_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -431,7 +431,7 @@ def test_manual_roles_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -450,7 +450,7 @@ def test_manual_roles_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -544,7 +544,7 @@ def test_auth_config_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--auth-password-strength-regex",
                 "^[A-Z]+$",
                 "--auth-password-permit-null=false",
@@ -563,7 +563,7 @@ def test_auth_config_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--auth-password-strength-regex",
                 "^[0-9]+$",
                 "--auth-password-permit-null=true",
@@ -584,7 +584,7 @@ def test_auth_config_recovery(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--auth-password-strength-regex",
                 "^[a-z]+$",
                 "--auth-password-permit-null=false",
@@ -636,7 +636,7 @@ def test_auth_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -648,7 +648,7 @@ def test_auth_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -660,7 +660,7 @@ def test_auth_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -1068,7 +1068,7 @@ def test_user_profile_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -1081,7 +1081,7 @@ def test_user_profile_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -1094,7 +1094,7 @@ def test_user_profile_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",

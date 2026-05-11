@@ -1,7 +1,7 @@
 metadata_queries: &metadata_queries
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE", "--also-log-to-stderr", "--storage-enable-schema-metadata=TRUE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace", "--also-log-to-stderr", "--storage-enable-schema-metadata=TRUE"]
       log_file: "metadata-queries.log"
       setup_queries: []
       validation_queries: []

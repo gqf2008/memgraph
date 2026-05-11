@@ -1,7 +1,7 @@
 show_license_info: &show_license_info
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE", "--also-log-to-stderr"]
+      args: ["--bolt-port", "7687", "--log-filter=trace", "--also-log-to-stderr"]
       log_file: "show-license-info.log"
       setup_queries: []
       validation_queries: []

@@ -1,7 +1,7 @@
 concurrency_cluster: &concurrency_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE", "--storage-delta-on-identical-property-update=false"]
+      args: ["--bolt-port", "7687", "--log-filter=trace", "--storage-delta-on-identical-property-update=false"]
       log_file: "concurrency.log"
       setup_queries: []
       validation_queries: []

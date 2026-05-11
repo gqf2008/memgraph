@@ -41,7 +41,7 @@ def test_durability_with_compression_on(connection):
     MEMGRAPH_INSTANCE_DESCRIPTION_MANUAL = {
         "main": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--storage-property-store-compression-enabled=true",
                 "--data-recovery-on-startup=true",
             ],

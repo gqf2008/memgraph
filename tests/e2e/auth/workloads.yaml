@@ -1,7 +1,7 @@
 auth_cluster: &auth_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "auth.log"
       setup_queries: []
       validation_queries: []

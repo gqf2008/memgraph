@@ -1,7 +1,7 @@
 dynamic_variable_creation_cluster: &dynamic_variable_creation_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "dynamic_variable_creation.log"
       setup_queries: []
       validation_queries: []

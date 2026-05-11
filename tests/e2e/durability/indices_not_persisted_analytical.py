@@ -30,7 +30,7 @@ def memgraph_instances(dir):
     return {
         "analytical": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=false",
                 "--storage-wal-enabled=true",
@@ -42,7 +42,7 @@ def memgraph_instances(dir):
         },
         "analytical_recover": {
             "args": [
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--also-log-to-stderr",
                 "--data-recovery-on-startup=true",
                 "--storage-wal-enabled=true",

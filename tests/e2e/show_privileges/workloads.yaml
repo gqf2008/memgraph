@@ -1,7 +1,7 @@
 show_privileges: &show_privileges
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "show_privileges.log"
       setup_queries: [
         "CREATE USER admin;",
@@ -16,7 +16,7 @@ show_privileges: &show_privileges
 show_privileges_cluster: &show_privileges_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "show_privileges.log"
       setup_queries: [
         "CREATE USER admin;",

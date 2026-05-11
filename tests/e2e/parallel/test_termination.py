@@ -223,7 +223,7 @@ def termination_instance():
         instance_name: {
             "args": [
                 f"--bolt-port={BASE_BOLT_PORT}",
-                "--log-level=WARNING",
+                "--log-filter=warn",
                 "--storage-wal-enabled=true",
                 "--storage-snapshot-interval-sec=300",
                 "--storage-properties-on-edges=true",
@@ -439,7 +439,7 @@ class TestGracefulShutdown:
             instance_name: {
                 "args": [
                     f"--bolt-port={port}",
-                    "--log-level=WARNING",
+                    "--log-filter=warn",
                     "--storage-wal-enabled=true",
                     "--storage-properties-on-edges=true",
                     "--telemetry-enabled=false",
@@ -634,7 +634,7 @@ class TestQueryTimeout:
             instance_name: {
                 "args": [
                     f"--bolt-port={port}",
-                    "--log-level=WARNING",
+                    "--log-filter=warn",
                     "--storage-wal-enabled=true",
                     "--storage-properties-on-edges=true",
                     "--telemetry-enabled=false",

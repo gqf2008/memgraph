@@ -2,7 +2,7 @@ bolt_port: &bolt_port "7687"
 args: &args
   - "--bolt_port"
   - *bolt_port
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--query-callable-mappings-path"
   - "query_modules/callable_alias_mapping.json"
 

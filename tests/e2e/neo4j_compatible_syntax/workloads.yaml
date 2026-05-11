@@ -1,7 +1,7 @@
 neo4j_compatible_syntax_cluster: &neo4j_compatible_syntax_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE", "--also-log-to-stderr", "--storage-properties-on-edges=TRUE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace", "--also-log-to-stderr", "--storage-properties-on-edges=TRUE"]
       log_file: "neo4j_compatible_syntax.log"
       setup_queries: []
       validation_queries: []

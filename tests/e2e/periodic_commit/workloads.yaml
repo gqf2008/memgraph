@@ -1,7 +1,7 @@
 periodic_commit_cluster: &periodic_commit_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "show_metrics.log"
       setup_queries: []
       validation_queries: []

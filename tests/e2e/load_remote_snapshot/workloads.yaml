@@ -1,6 +1,6 @@
 args: &args
   - "--bolt-port=7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--file-download-conn-timeout-sec=15"
 
 load_remote_snapshot_in_memory_cluster: &load_remote_snapshot_in_memory_cluster

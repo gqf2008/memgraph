@@ -13,7 +13,7 @@ bolt_port: &bolt_port "7687"
 args_procedures: &args_procedures
   - "--bolt-port"
   - *bolt_port
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 procedure_cluster: &procedure_cluster
   cluster:

@@ -117,7 +117,7 @@ def memgraph_instance(memgraph_port: int, num_workers: int) -> Generator[Memgrap
         instance_name: {
             "args": [
                 f"--bolt-port={memgraph_port}",
-                "--log-level=WARNING",
+                "--log-filter=warn",
                 "--storage-wal-enabled=true",
                 "--storage-snapshot-interval-sec=300",
                 "--storage-properties-on-edges=true",
@@ -191,7 +191,7 @@ def fresh_memgraph(num_workers: int) -> Generator[MemgraphWrapper, None, None]:
         instance_name: {
             "args": [
                 f"--bolt-port={port}",
-                "--log-level=WARNING",
+                "--log-filter=warn",
                 "--storage-wal-enabled=true",
                 "--storage-snapshot-interval-sec=300",
                 "--storage-properties-on-edges=true",
@@ -302,7 +302,7 @@ class MemgraphInstanceFactory:
 
         args = [
             f"--bolt-port={port}",
-            "--log-level=WARNING",
+            "--log-filter=warn",
             "--storage-wal-enabled=true",
             "--storage-snapshot-interval-sec=300",
             "--storage-properties-on-edges=true",

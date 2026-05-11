@@ -1,6 +1,6 @@
 args: &args
   - "--bolt-port=7687"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--schema-info-enabled=true"
 
 query_modules_setup_queries: &query_modules_setup_queries

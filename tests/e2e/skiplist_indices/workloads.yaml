@@ -1,7 +1,7 @@
 skiplist_indices_cluster: &skiplist_indices_cluster
   cluster:
     main:
-      args: ["--bolt-port", "7687", "--log-level=TRACE"]
+      args: ["--bolt-port", "7687", "--log-filter=trace"]
       log_file: "skiplist_indices.log"
       setup_queries: []
       validation_queries: []

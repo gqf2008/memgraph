@@ -2,13 +2,13 @@ bolt_port: &bolt_port "7687"
 args_properties_false: &args_properties_false
   - "--bolt-port"
   - *bolt_port
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--storage-properties-on-edges=False"
 
 args_properties_true: &args_properties_true
   - "--bolt-port"
   - *bolt_port
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--storage-properties-on-edges=True"
 
 storage_properties_edges_true_in_memory_cluster: &storage_properties_edges_true_in_memory_cluster

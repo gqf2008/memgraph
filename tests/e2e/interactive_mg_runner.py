@@ -44,23 +44,32 @@ log = logging.getLogger("memgraph.tests.e2e")
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_DIR = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
 BUILD_DIR = os.path.join(PROJECT_DIR, "build")
-MEMGRAPH_BINARY = os.path.join(BUILD_DIR, "memgraph")
+
+# Detect Rust binary (release preferred, then debug, then fallback to legacy C++ binary)
+_RUST_RELEASE = os.path.join(PROJECT_DIR, "rust", "target", "release", "memgraph-rs")
+_RUST_DEBUG = os.path.join(PROJECT_DIR, "rust", "target", "debug", "memgraph-rs")
+if os.path.exists(_RUST_RELEASE):
+    MEMGRAPH_BINARY = _RUST_RELEASE
+elif os.path.exists(_RUST_DEBUG):
+    MEMGRAPH_BINARY = _RUST_DEBUG
+else:
+    MEMGRAPH_BINARY = os.path.join(BUILD_DIR, "memgraph")
 
 # Cluster description, injectable as the context.
 # If the script argument is not provided, the following will be used as a default.
 MEMGRAPH_INSTANCES_DESCRIPTION = {
     "replica1": {
-        "args": ["--bolt-port", "7688", "--log-level=TRACE"],
+        "args": ["--bolt-port", "7688", "--log-filter=trace"],
         "log_file": "replica1.log",
         "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10001;"],
     },
     "replica2": {
-        "args": ["--bolt-port", "7689", "--log-level=TRACE"],
+        "args": ["--bolt-port", "7689", "--log-filter=trace"],
         "log_file": "replica2.log",
         "setup_queries": ["SET REPLICATION ROLE TO REPLICA WITH PORT 10002;"],
     },
     "main": {
-        "args": ["--bolt-port", "7687", "--log-level=TRACE"],
+        "args": ["--bolt-port", "7687", "--log-filter=trace"],
         "log_file": "main.log",
         "setup_queries": [
             "REGISTER REPLICA replica1 SYNC TO '127.0.0.1:10001'",

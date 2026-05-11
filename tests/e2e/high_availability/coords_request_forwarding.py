@@ -63,7 +63,7 @@ def get_instances_description_no_setup(test_name: str):
         "instance_1": {
             "args": [
                 "--bolt-port=7687",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--management-port=10011",
                 "--storage-wal-file-size-kib=1",
             ],
@@ -74,7 +74,7 @@ def get_instances_description_no_setup(test_name: str):
         "instance_2": {
             "args": [
                 "--bolt-port=7688",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--management-port=10012",
                 "--storage-wal-file-size-kib=1",
             ],
@@ -85,7 +85,7 @@ def get_instances_description_no_setup(test_name: str):
         "coordinator_1": {
             "args": [
                 "--bolt-port=7690",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=1",
                 "--coordinator-port=10111",
                 "--management-port=10121",
@@ -98,7 +98,7 @@ def get_instances_description_no_setup(test_name: str):
         "coordinator_2": {
             "args": [
                 "--bolt-port=7691",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=2",
                 "--coordinator-port=10112",
                 "--management-port=10122",
@@ -111,7 +111,7 @@ def get_instances_description_no_setup(test_name: str):
         "coordinator_3": {
             "args": [
                 "--bolt-port=7692",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--coordinator-id=3",
                 "--coordinator-port=10113",
                 "--management-port=10123",

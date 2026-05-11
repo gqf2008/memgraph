@@ -77,21 +77,21 @@ def get_all_descriptions(cursor):
 def make_instances(test_name):
     return {
         "replica_1": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['replica_1']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/replica1.log",
             "setup_queries": [
                 f"SET REPLICATION ROLE TO REPLICA WITH PORT {REPLICATION_PORTS['replica_1']};",
             ],
         },
         "replica_2": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['replica_2']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['replica_2']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/replica2.log",
             "setup_queries": [
                 f"SET REPLICATION ROLE TO REPLICA WITH PORT {REPLICATION_PORTS['replica_2']};",
             ],
         },
         "main": {
-            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-level=TRACE"],
+            "args": ["--bolt-port", f"{BOLT_PORTS['main']}", "--log-filter=trace"],
             "log_file": f"{get_logs_path(LOG_DIR, test_name)}/main.log",
             "setup_queries": [
                 f"REGISTER REPLICA replica_1 SYNC TO '127.0.0.1:{REPLICATION_PORTS['replica_1']}';",

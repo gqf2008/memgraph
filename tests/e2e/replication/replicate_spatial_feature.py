@@ -60,7 +60,7 @@ def test_point_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica1",
@@ -72,7 +72,7 @@ def test_point_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -84,7 +84,7 @@ def test_point_replication(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",
             "data_directory": f"{get_data_path(file, test_name)}/main",
@@ -166,7 +166,7 @@ def test_point_index_replication(connection):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": "replica1.log",
             "setup_queries": [
@@ -177,7 +177,7 @@ def test_point_index_replication(connection):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": "replica2.log",
             "setup_queries": [
@@ -188,7 +188,7 @@ def test_point_index_replication(connection):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": "main.log",
             "setup_queries": [

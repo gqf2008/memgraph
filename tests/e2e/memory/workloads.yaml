@@ -4,7 +4,7 @@ args: &args
   - *bolt_port
   - "--memory-limit=1024"
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--also-log-to-stderr"
 
 args_100_MiB_limit: &args_100_MiB_limit
@@ -12,7 +12,7 @@ args_100_MiB_limit: &args_100_MiB_limit
   - *bolt_port
   - "--memory-limit=100"
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--data-recovery-on-startup=false"
 
 in_memory_100_MiB_limit_cluster: &in_memory_100_MiB_limit_cluster
@@ -44,7 +44,7 @@ args_query_limit: &args_query_limit
   - "--bolt-port"
   - *bolt_port
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
 
 in_memory_query_limit_cluster: &in_memory_query_limit_cluster
   cluster:
@@ -59,7 +59,7 @@ args_350_MiB_limit: &args_350_MiB_limit
   - *bolt_port
   - "--memory-limit=350"
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=INFO"
+  - "--log-filter=info"
 
 in_memory_350_MiB_limit_cluster: &in_memory_350_MiB_limit_cluster
   cluster:
@@ -83,7 +83,7 @@ args_300_MiB_limit: &args_300_MiB_limit
   - *bolt_port
   - "--memory-limit=300"
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=TRACE"
+  - "--log-filter=trace"
   - "--also-log-to-stderr=true"
 
 in_memory_300_MiB_limit_cluster: &in_memory_300_MiB_limit_cluster
@@ -108,7 +108,7 @@ args_global_limit_1024_MiB: &args_global_limit_1024_MiB
   - "--bolt-port"
   - *bolt_port
   - "--storage-gc-cycle-sec=180"
-  - "--log-level=INFO"
+  - "--log-filter=info"
 
 in_memory_limited_global_limit_cluster: &in_memory_limited_global_limit_cluster
   cluster:

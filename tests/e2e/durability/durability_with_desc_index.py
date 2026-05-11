@@ -49,7 +49,7 @@ def test_selective_drop_desc_index_survives_restart(test_name):
     data_directory = get_data_path(FILE, test_name)
     desc = {
         "main": {
-            "args": ["--log-level=TRACE", "--data-recovery-on-startup=true"],
+            "args": ["--log-filter=trace", "--data-recovery-on-startup=true"],
             "log_file": "selective_drop_survives_restart.log",
             "data_directory": data_directory,
         },

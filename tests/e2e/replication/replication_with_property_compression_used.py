@@ -64,7 +64,7 @@ def test_replication_with_compression_on(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_1']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--storage-property-store-compression-enabled=true",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica1.log",
@@ -77,7 +77,7 @@ def test_replication_with_compression_on(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['replica_2']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/replica2.log",
             "data_directory": f"{get_data_path(file, test_name)}/replica2",
@@ -89,7 +89,7 @@ def test_replication_with_compression_on(connection, test_name):
             "args": [
                 "--bolt-port",
                 f"{BOLT_PORTS['main']}",
-                "--log-level=TRACE",
+                "--log-filter=trace",
                 "--storage-property-store-compression-enabled=true",
             ],
             "log_file": f"{get_logs_path(file, test_name)}/main.log",

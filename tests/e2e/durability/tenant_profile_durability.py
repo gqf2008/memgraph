@@ -34,7 +34,7 @@ INSTANCE = {
         "args": [
             "--bolt-port",
             str(BOLT_PORT),
-            "--log-level=TRACE",
+            "--log-filter=trace",
             "--also-log-to-stderr=true",
         ],
         "log_file": "tenant_profile_durability.log",

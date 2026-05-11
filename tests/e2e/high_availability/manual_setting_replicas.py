@@ -30,8 +30,8 @@ MEMGRAPH_INSTANCES_DESCRIPTION = {
         "args": [
             "--bolt-port",
             "7687",
-            "--log-level",
-            "TRACE",
+            "--log-filter",
+            "trace",
             "--management-port",
             "10013",
         ],
