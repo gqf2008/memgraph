@@ -1,13 +1,29 @@
 //! Write-Ahead Log (WAL) for database durability.
 //!
 //! Format (matching C++): `[MGwl magic: 4B][version: u64 LE][records...]`
-//! Each record is SLK-framed: `[u32 LE size][SLK payload][0x00000000 footer]`.
+//! Each record is SLK-framed: `[u32 LE size][SLK payload][u32 LE CRC32 checksum][0x00000000 footer]`.
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
 use mgslk::{Builder, Reader, SlkLoad, SlkSave, DURABILITY_VERSION, WAL_MAGIC};
+
+/// Compute CRC32 checksum using the standard IEEE/ISO polynomial (0xEDB88320).
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFFFFFFu32;
+    for byte in data {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFFFFFF
+}
 
 use crate::delta_record::DeltaRecord;
 
@@ -39,13 +55,18 @@ impl WalWriter {
         })
     }
 
-    /// Append a delta record to the WAL. Each record is SLK-framed.
+    /// Append a delta record to the WAL. Each record is SLK-framed with CRC32 checksum.
     pub fn append_record(&mut self, record: &DeltaRecord) -> Result<(), std::io::Error> {
         let (mut builder, collector) = Builder::new_collecting();
         record.slk_save(&mut builder);
         builder.finalize();
         let framed_data = collector.into_vec();
+
+        // Compute CRC32 over the entire SLK frame (size + payload + footer)
+        let checksum = crc32(&framed_data);
+
         self.file.write_all(&framed_data)?;
+        self.file.write_all(&checksum.to_le_bytes())?;
         self.records_written += 1;
         Ok(())
     }
@@ -115,6 +136,7 @@ impl WalReader {
     }
 
     /// Parse SLK-framed delta records from a byte slice.
+    /// Each record format: [4-byte size][payload][4-byte CRC32][4-byte footer]
     fn parse_records(mut data: &[u8]) -> Result<Vec<DeltaRecord>, WalError> {
         let mut records = Vec::new();
 
@@ -131,14 +153,36 @@ impl WalReader {
                 continue;
             }
 
-            // We need to find the entire record (segment payload + footer)
-            // The record = [seg_size(4)][payload(seg_size)][footer(4)]
-            let record_end = 4 + seg_size + 4;
+            // Record = [seg_size(4)][payload(seg_size)][CRC32(4)][footer(4)]
+            let record_end = 4 + seg_size + 4 + 4;
             if data.len() < record_end {
                 break;
             }
 
-            let record_bytes = &data[..record_end];
+            // The SLK frame includes size + payload + footer
+            let slk_frame = &data[..4 + seg_size + 4];
+
+            // Verify CRC32 checksum
+            let stored_crc = u32::from_le_bytes([
+                data[4 + seg_size + 4],
+                data[4 + seg_size + 5],
+                data[4 + seg_size + 6],
+                data[4 + seg_size + 7],
+            ]);
+            let computed_crc = crc32(slk_frame);
+            if stored_crc != computed_crc {
+                // CRC mismatch — corrupted record, skip it
+                tracing::warn!(
+                    "WAL CRC mismatch at offset {}: stored={:#010x}, computed={:#010x}",
+                    records.len(),
+                    stored_crc,
+                    computed_crc
+                );
+                data = &data[record_end..];
+                continue;
+            }
+
+            let record_bytes = &data[..4 + seg_size + 4];
             let mut reader = Reader::new(record_bytes);
             let record = DeltaRecord::slk_load(&mut reader)
                 .map_err(|e| WalError::Corrupt(format!("failed to decode record: {}", e)))?;

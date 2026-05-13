@@ -302,6 +302,7 @@ pub async fn run(
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
+    cluster_state: Arc<mgcoord::ClusterState>,
     port: u16,
     max_connections: usize,
 ) {
@@ -337,20 +338,21 @@ pub async fn run(
                 let admin = admin.clone();
                 let query_cache = query_cache.clone();
                 let tls = tls_acceptor.clone();
+                let cluster = cluster_state.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Some(ref acceptor) = tls {
                         match acceptor.accept(stream).await {
                             Ok(tls_stream) => {
                                 tracing::info!("[bolt] TLS handshake completed for {}", peer);
-                                handle_connection(storage, catalog, auth, admin, query_cache, BoltStream::Tls(tls_stream), peer).await;
+                                handle_connection(storage, catalog, auth, admin, query_cache, cluster, BoltStream::Tls(tls_stream), peer).await;
                             }
                             Err(e) => {
                                 tracing::warn!("[bolt] TLS handshake failed for {}: {}", peer, e);
                             }
                         }
                     } else {
-                        handle_connection(storage, catalog, auth, admin, query_cache, BoltStream::Plain(stream), peer).await;
+                        handle_connection(storage, catalog, auth, admin, query_cache, cluster, BoltStream::Plain(stream), peer).await;
                     }
                 });
             }
@@ -367,6 +369,7 @@ async fn handle_connection(
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
+    cluster_state: Arc<mgcoord::ClusterState>,
     mut stream: BoltStream,
     peer: std::net::SocketAddr,
 ) {
@@ -961,8 +964,18 @@ async fn handle_connection(
             }
 
             Message::Route { .. } => {
+                // Build routing table from cluster state (Bolt v5.2)
+                let mut rt = HashMap::new();
+                for (db, addr) in cluster_state.routes() {
+                    let mut servers = HashMap::new();
+                    // Single-main topology: the main instance handles all roles
+                    servers.insert("address".into(), Value::String(format!("{}:{}", addr.ip(), addr.port())));
+                    let mut db_entry = HashMap::new();
+                    db_entry.insert("servers".into(), Value::List(vec![Value::Map(servers)]));
+                    rt.insert(db, Value::Map(db_entry));
+                }
                 let mut meta = HashMap::new();
-                meta.insert("rt".into(), Value::Map(HashMap::new()));
+                meta.insert("rt".into(), Value::Map(rt));
                 if send_message(&mut stream, &Message::Success { metadata: meta })
                     .await
                     .is_err()

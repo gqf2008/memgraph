@@ -574,6 +574,7 @@ async fn main() {
         let bolt_admin = ctx.admin.clone();
         let bolt_cache = ctx.query_cache.clone();
         let bolt_tls = build_tls_acceptor(&ctx);
+        let bolt_cluster = ctx.cluster_state.read().unwrap().clone();
         Some(tokio::spawn(async move {
             bolt_server::run(
                 bolt_storage,
@@ -582,6 +583,7 @@ async fn main() {
                 bolt_admin,
                 bolt_cache,
                 bolt_tls,
+                bolt_cluster,
                 port,
                 bolt_server::DEFAULT_MAX_CONNECTIONS,
             )

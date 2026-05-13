@@ -14,6 +14,7 @@
 //! signature-correct stubs returning `NotYetImplemented`.
 
 use chrono::{Datelike, Timelike};
+pub mod module_loader;
 use std::alloc::{self, Layout};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};

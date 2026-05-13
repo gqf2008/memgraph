@@ -2226,6 +2226,7 @@ dependencies = [
  "mgstorage",
  "rand",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -2333,6 +2334,7 @@ name = "mgprocedure"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "libc",
  "mgcatalog",
  "mgcore",
  "mginterp",

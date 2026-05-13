@@ -11,6 +11,7 @@ mgslk = { path = "../mgslk" }
 mgstorage = { path = "../mgstorage" }
 mgcatalog = { path = "../mgcatalog" }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
