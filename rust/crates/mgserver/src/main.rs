@@ -535,12 +535,14 @@ async fn main() {
         let bolt_catalog = ctx.catalog.clone();
         let bolt_auth = auth_legacy.clone();
         let bolt_admin = ctx.admin.clone();
+        let bolt_cache = ctx.query_cache.clone();
         Some(tokio::spawn(async move {
             bolt_server::run(
                 bolt_storage,
                 bolt_catalog,
                 bolt_auth,
                 bolt_admin,
+                bolt_cache,
                 port,
                 bolt_server::DEFAULT_MAX_CONNECTIONS,
             )

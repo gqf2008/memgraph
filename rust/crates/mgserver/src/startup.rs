@@ -141,7 +141,7 @@ pub struct ServerContext {
     pub disk_monitor: DiskMonitor,
     pub system_info: SystemInfo,
     pub shutdown_flag: Arc<AtomicBool>,
-    pub query_cache: QueryCache,
+    pub query_cache: Arc<QueryCache>,
     pub prepared_statements: crate::query_cache::PreparedStatementCache,
     pub plugin_registry: PluginRegistry,
     pub tls_config: std::sync::Mutex<Option<TlsConfig>>,
@@ -188,7 +188,7 @@ impl ServerContext {
             disk_monitor: DiskMonitor::new("."),
             system_info,
             shutdown_flag: Arc::new(AtomicBool::new(false)),
-            query_cache: QueryCache::new(1000),
+            query_cache: Arc::new(QueryCache::new(1000)),
             prepared_statements: crate::query_cache::PreparedStatementCache::new(100),
             plugin_registry: PluginRegistry::new(),
             tls_config: std::sync::Mutex::new(None),
@@ -210,10 +210,11 @@ impl ServerContext {
         cache_policy: EvictionPolicy,
     ) -> Self {
         let mut ctx = Self::new(data_dir);
-        ctx.query_cache = QueryCache::new(cache_size).with_policy(cache_policy);
+        let mut cache = QueryCache::new(cache_size).with_policy(cache_policy);
         if let Some(ttl) = cache_ttl {
-            ctx.query_cache = ctx.query_cache.with_ttl(ttl);
+            cache = cache.with_ttl(ttl);
         }
+        ctx.query_cache = Arc::new(cache);
         ctx
     }
 

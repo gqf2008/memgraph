@@ -247,6 +247,7 @@ pub async fn run(
     catalog: Arc<Catalog>,
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
+    query_cache: Arc<crate::query_cache::QueryCache>,
     port: u16,
     max_connections: usize,
 ) {
@@ -280,9 +281,10 @@ pub async fn run(
                 let catalog = catalog.clone();
                 let auth = auth.clone();
                 let admin = admin.clone();
+                let query_cache = query_cache.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    handle_connection(storage, catalog, auth, admin, stream, peer).await;
+                    handle_connection(storage, catalog, auth, admin, query_cache, stream, peer).await;
                 });
             }
             Err(e) => {
@@ -297,6 +299,7 @@ async fn handle_connection(
     catalog: Arc<Catalog>,
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
+    query_cache: Arc<crate::query_cache::QueryCache>,
     mut stream: TcpStream,
     peer: std::net::SocketAddr,
 ) {
@@ -652,15 +655,23 @@ async fn handle_connection(
                 } else {
                     set_active_transaction(None)
                 };
-                match execute_with_catalog_auth_dbms_and_params_timeout(
-                    &storage,
-                    query,
-                    Some(&catalog),
-                    &params,
-                    None,
-                    None,
-                    timeout,
-                ) {
+
+                // Try query cache first — reuse parsed query if available
+                let cached = query_cache.get(query);
+                let result = if let Some(cached_query) = cached {
+                    mginterp::execute_query_with_binding(&storage, &cached_query.parsed, &params)
+                } else {
+                    execute_with_catalog_auth_dbms_and_params_timeout(
+                        &storage,
+                        query,
+                        Some(&catalog),
+                        &params,
+                        None,
+                        None,
+                        timeout,
+                    )
+                };
+                match result {
                     Ok(result) => {
                         let mut meta = HashMap::new();
                         meta.insert(
