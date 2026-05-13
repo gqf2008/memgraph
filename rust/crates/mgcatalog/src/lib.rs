@@ -44,6 +44,7 @@ pub struct Catalog {
     label_stats: RwLock<HashMap<LabelId, u64>>,
     /// Edge type → approximate edge count.
     edge_type_stats: RwLock<HashMap<EdgeTypeId, u64>>,
+    label_property_stats: RwLock<HashMap<(LabelId, PropertyId), u64>>,
 }
 
 /// Constraint definition.
@@ -127,6 +128,7 @@ impl Catalog {
             label_properties: RwLock::new(HashMap::new()),
             label_stats: RwLock::new(HashMap::new()),
             edge_type_stats: RwLock::new(HashMap::new()),
+            label_property_stats: RwLock::new(HashMap::new()),
         }
     }
 
@@ -403,6 +405,14 @@ impl Catalog {
             .get(&label)
             .copied()
             .unwrap_or(0)
+    }
+
+    pub fn set_label_property_stat(&self, label: LabelId, property: PropertyId, count: u64) {
+        self.label_property_stats.write().unwrap().insert((label, property), count);
+    }
+
+    pub fn label_property_stat(&self, label: LabelId, property: PropertyId) -> u64 {
+        self.label_property_stats.read().unwrap().get(&(label, property)).copied().unwrap_or(0)
     }
 
     pub fn set_edge_type_stat(&self, etype: EdgeTypeId, count: u64) {

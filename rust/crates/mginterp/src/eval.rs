@@ -646,24 +646,6 @@ fn cmp_expr(
     }
 }
 
-fn compare_values(a: &PropertyValue, b: &PropertyValue) -> std::cmp::Ordering {
-    match (a, b) {
-        (PropertyValue::Int(a), PropertyValue::Int(b)) => a.cmp(b),
-        (PropertyValue::Double(a), PropertyValue::Double(b)) => {
-            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-        }
-        (PropertyValue::Int(a), PropertyValue::Double(b)) => (*a as f64)
-            .partial_cmp(b)
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (PropertyValue::Double(a), PropertyValue::Int(b)) => a
-            .partial_cmp(&(*b as f64))
-            .unwrap_or(std::cmp::Ordering::Equal),
-        (PropertyValue::String(a), PropertyValue::String(b)) => a.cmp(b),
-        (PropertyValue::Bool(a), PropertyValue::Bool(b)) => a.cmp(b),
-        _ => std::cmp::Ordering::Equal,
-    }
-}
-
 fn arithmetic(
     a: &PropertyValue,
     b: &PropertyValue,
@@ -3966,7 +3948,7 @@ fn eval_function(
                 .map(|e| eval_expression_with_catalog(e, bindings, storage, catalog));
             match a {
                 Some(PropertyValue::List(mut items)) => {
-                    items.sort_by(compare_values);
+                    items.sort_by(crate::compare);
                     PropertyValue::List(items)
                 }
                 _ => PropertyValue::Null,
@@ -3998,7 +3980,7 @@ fn eval_function(
                         _ => None,
                     })
                     .collect();
-                maps.sort_by(|a, b| compare_values(&a.0, &b.0));
+                maps.sort_by(|a, b| crate::compare(&a.0, &b.0));
                 PropertyValue::List(
                     maps.into_iter()
                         .map(|(_, e)| PropertyValue::Map(e))
@@ -4214,7 +4196,7 @@ fn eval_function(
                                 | PropertyValue::Double(_)
                                 | PropertyValue::String(_) => {
                                     if let Some(current) = max_val {
-                                        if compare_values(item, current)
+                                        if crate::compare(item, current)
                                             == std::cmp::Ordering::Greater
                                         {
                                             max_val = Some(item);
@@ -4244,7 +4226,7 @@ fn eval_function(
                                 | PropertyValue::Double(_)
                                 | PropertyValue::String(_) => {
                                     if let Some(current) = min_val {
-                                        if compare_values(item, current) == std::cmp::Ordering::Less
+                                        if crate::compare(item, current) == std::cmp::Ordering::Less
                                         {
                                             min_val = Some(item);
                                         }
@@ -6166,8 +6148,12 @@ fn eval_function(
             .map(|_| PropertyValue::String("default".to_string()))
             .unwrap_or(PropertyValue::Null),
         n if n.eq_ignore_ascii_case("roles") => {
-            // No auth support yet; return empty list
-            PropertyValue::List(vec![])
+            let roles = crate::active_auth_store()
+                .map(|auth| {
+                    auth.list_roles().into_iter().map(PropertyValue::String).collect()
+                })
+                .unwrap_or_default();
+            PropertyValue::List(roles)
         }
         n if n.eq_ignore_ascii_case("withinbbox") || n.eq_ignore_ascii_case("within_bbox") => {
             if args.len() == 3 {

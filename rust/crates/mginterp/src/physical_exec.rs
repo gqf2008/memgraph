@@ -35,6 +35,21 @@ pub fn execute_physical_plan(
     execute_op(storage, &plan.op, &tx)
 }
 
+/// Merge two result rows. Returns None if the same column has conflicting
+/// values (different non-Null bindings for the same name).
+fn try_merge_rows(left: &ResultRow, right: &ResultRow) -> Option<ResultRow> {
+    let mut merged = left.clone();
+    for (k, v) in right {
+        if let Some(existing_v) = merged.get(k) {
+            if existing_v != v {
+                return None;
+            }
+        }
+        merged.insert(k.clone(), v.clone());
+    }
+    Some(merged)
+}
+
 fn execute_op(
     storage: &Storage,
     op: &PhysicalOp,
@@ -378,18 +393,7 @@ fn execute_plan_rows(
             for l in left_rows {
                 crate::check_query_timeout()?;
                 for r in &right_rows {
-                    let mut merged = l.clone();
-                    let mut conflict = false;
-                    for (k, v) in r {
-                        if let Some(existing_v) = merged.get(k) {
-                            if existing_v != v {
-                                conflict = true;
-                                break;
-                            }
-                        }
-                        merged.insert(k.clone(), v.clone());
-                    }
-                    if !conflict {
+                    if let Some(merged) = try_merge_rows(&l, r) {
                         rows.push(merged);
                     }
                 }
@@ -427,18 +431,7 @@ fn execute_plan_rows(
                 let key_str = format!("{:?}", key_val);
                 if let Some(left_matches) = hash_table.get(&key_str) {
                     for l in left_matches {
-                        let mut merged = l.clone();
-                        let mut conflict = false;
-                        for (k, v) in &r {
-                            if let Some(existing_v) = merged.get(k) {
-                                if existing_v != v {
-                                    conflict = true;
-                                    break;
-                                }
-                            }
-                            merged.insert(k.clone(), v.clone());
-                        }
-                        if !conflict {
+                        if let Some(merged) = try_merge_rows(l, &r) {
                             rows.push(merged);
                         }
                     }
@@ -633,6 +626,59 @@ fn execute_plan_rows(
             }
             Ok(rows)
         }
+        PhysicalOp::SortMergeJoin {
+            left,
+            right,
+            left_key,
+            right_key,
+        } => {
+            let left_rows = execute_plan_rows(storage, &left.op, tx)?;
+            let right_rows = execute_plan_rows(storage, &right.op, tx)?;
+
+            let left_expr = Expression::Identifier(left_key.clone());
+            let right_expr = Expression::Identifier(right_key.clone());
+
+            // Pre-compute join keys to avoid repeated eval inside sort_by.
+            let mut left_keyed: Vec<_> = left_rows.into_iter().map(|row| {
+                let key = eval_expression_with_storage(&left_expr, &row, Some(storage));
+                (row, key)
+            }).collect();
+            let mut right_keyed: Vec<_> = right_rows.into_iter().map(|row| {
+                let key = eval_expression_with_storage(&right_expr, &row, Some(storage));
+                (row, key)
+            }).collect();
+
+            left_keyed.sort_by(|(_, ka), (_, kb)| crate::compare(ka, kb));
+            right_keyed.sort_by(|(_, ka), (_, kb)| crate::compare(ka, kb));
+
+            let mut rows = Vec::new();
+            let mut i = 0;
+            let mut j = 0;
+
+            while i < left_keyed.len() && j < right_keyed.len() {
+                crate::check_query_timeout()?;
+                match crate::compare(&left_keyed[i].1, &right_keyed[j].1) {
+                    std::cmp::Ordering::Less => i += 1,
+                    std::cmp::Ordering::Greater => j += 1,
+                    std::cmp::Ordering::Equal => {
+                        let key_val = left_keyed[i].1.clone();
+                        let i_start = i;
+                        while i < left_keyed.len() && crate::compare(&left_keyed[i].1, &key_val) == std::cmp::Ordering::Equal { i += 1; }
+                        let j_start = j;
+                        while j < right_keyed.len() && crate::compare(&right_keyed[j].1, &key_val) == std::cmp::Ordering::Equal { j += 1; }
+
+                        for l in &left_keyed[i_start..i] {
+                            for r in &right_keyed[j_start..j] {
+                                if let Some(merged) = try_merge_rows(&l.0, &r.0) {
+                                    rows.push(merged);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(rows)
+        }
         _ => Err(ExecError::Runtime(format!(
             "unsupported physical operator: {:?}",
             op
@@ -796,5 +842,80 @@ mod tests {
         .unwrap();
 
         assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_sort_merge_join_basic() {
+        let storage = Storage::new();
+        let tx = storage.begin_transaction(mgcore::delta::IsolationLevel::SnapshotIsolation);
+
+        for i in 0..3 {
+            let gid = mgcore::types::Gid::from(i as u64);
+            let _ = storage.create_vertex(&tx, gid);
+            let _ = storage.vertex_set_property(&tx, gid, PropertyId::from(0), PropertyValue::Int(i));
+        }
+
+        let _guard = set_active_transaction(Some(tx.clone()));
+
+        let make_side = |alias: &str| PhysicalPlan {
+            op: PhysicalOp::Project {
+                expressions: vec![Expression::Property {
+                    object: Box::new(Expression::Identifier(alias.to_string())),
+                    key: PropertyId::from(0),
+                }],
+                child: Box::new(PhysicalPlan {
+                    op: PhysicalOp::SeqScan { alias: Some(alias.to_string()), label: None },
+                    cost: PlanCost::default(),
+                    cardinality: 3.0,
+                }),
+            },
+            cost: PlanCost::default(),
+            cardinality: 3.0,
+        };
+
+        let rows = execute_plan_rows(
+            &storage,
+            &PhysicalOp::SortMergeJoin {
+                left: Box::new(make_side("a")),
+                right: Box::new(make_side("b")),
+                left_key: "col_0".to_string(),
+                right_key: "col_0".to_string(),
+            },
+            &tx,
+        ).unwrap();
+
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn test_sort_merge_join_empty_keys_cartesian() {
+        let storage = Storage::new();
+        let tx = storage.begin_transaction(mgcore::delta::IsolationLevel::SnapshotIsolation);
+
+        for i in 0..3 {
+            let gid = mgcore::types::Gid::from(i as u64);
+            let _ = storage.create_vertex(&tx, gid);
+        }
+
+        let _guard = set_active_transaction(Some(tx.clone()));
+
+        let make_side = |alias: &str| PhysicalPlan {
+            op: PhysicalOp::SeqScan { alias: Some(alias.to_string()), label: None },
+            cost: PlanCost::default(),
+            cardinality: 3.0,
+        };
+
+        let rows = execute_plan_rows(
+            &storage,
+            &PhysicalOp::SortMergeJoin {
+                left: Box::new(make_side("a")),
+                right: Box::new(make_side("b")),
+                left_key: String::new(),
+                right_key: String::new(),
+            },
+            &tx,
+        ).unwrap();
+
+        assert_eq!(rows.len(), 9);
     }
 }

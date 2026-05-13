@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 use mgbolt::framing::MAX_CHUNK_SIZE;
 use mgbolt::handshake::{Handshake, VarInt};
 use mgbolt::message::Message;
-use mgbolt::value::Value;
+use mgbolt::value::{Value, SIG_NODE, SIG_RELATIONSHIP};
 use mgcatalog::Catalog;
 use mgcore::property_value::PropertyValue;
 use mginterp::{execute_with_catalog_auth_dbms_and_params_timeout, set_active_transaction};
@@ -42,9 +42,41 @@ fn bolt_value_to_property(v: &Value) -> PropertyValue {
                 .map(|(k, v)| (k.clone(), bolt_value_to_property(v)))
                 .collect(),
         ),
-        Value::Bytes(_) => PropertyValue::Null, // byte arrays as params not supported yet
-        Value::Struct(_, _) => PropertyValue::Null, // graph structures as params are not supported
+        Value::Bytes(b) => {
+            PropertyValue::List(b.iter().map(|&byte| PropertyValue::Int(byte as i64)).collect())
+        }
+        Value::Struct(sig, fields) => {
+            match *sig {
+                SIG_NODE if fields.len() == 3 => {
+                    let gid = match &fields[0] { Value::Int(id) => mgcore::types::Gid::from(*id as u64), _ => mgcore::types::Gid::from(0u64) };
+                    let labels = match &fields[1] {
+                        Value::List(ls) => ls.iter().filter_map(|v| match v { Value::String(_) => Some(mgcore::types::LabelId::from(0u32)), _ => None }).collect(),
+                        _ => vec![],
+                    };
+                    let props = bolt_map_to_property_store(&fields[2]);
+                    PropertyValue::Vertex(mgcore::property_value::VertexRef::new(gid, labels, props))
+                }
+                SIG_RELATIONSHIP if fields.len() == 5 => {
+                    let gid = match &fields[0] { Value::Int(id) => mgcore::types::Gid::from(*id as u64), _ => mgcore::types::Gid::from(0u64) };
+                    let from = match &fields[1] { Value::Int(id) => mgcore::types::Gid::from(*id as u64), _ => mgcore::types::Gid::from(0u64) };
+                    let to = match &fields[2] { Value::Int(id) => mgcore::types::Gid::from(*id as u64), _ => mgcore::types::Gid::from(0u64) };
+                    let props = bolt_map_to_property_store(&fields[4]);
+                    PropertyValue::Edge(mgcore::property_value::EdgeRefValue::new(gid, mgcore::types::EdgeTypeId::from(0u32), from, to, props))
+                }
+                _ => PropertyValue::Null,
+            }
+        }
     }
+}
+
+fn bolt_map_to_property_store(v: &Value) -> mgcore::property_store::PropertyStore {
+    let mut ps = mgcore::property_store::PropertyStore::new();
+    if let Value::Map(entries) = v {
+        for (i, (_, val)) in entries.iter().enumerate() {
+            ps.set(mgcore::types::PropertyId::from(i as u32), bolt_value_to_property(val));
+        }
+    }
+    ps
 }
 
 /// Convert a mgcore `PropertyValue` into a Bolt `Value`, resolving label/type

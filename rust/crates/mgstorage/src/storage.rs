@@ -2637,6 +2637,13 @@ impl Storage {
             }
         }
     }
+
+    /// Drop all entries for a property from the global edge property index.
+    pub fn drop_edge_property_index(&self, prop: PropertyId) -> bool {
+        self.edge_property_index.remove_property(prop);
+        self.bump_schema_generation();
+        true
+    }
 }
 
 /// Snapshot of a vertex at a point in time.

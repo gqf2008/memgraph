@@ -1144,6 +1144,7 @@ impl ReplicaHandler {
 /// Applies delta batches to local Storage.
 pub struct StorageDeltaApplier {
     storage: Arc<Storage>,
+    catalog: Option<Arc<mgcatalog::Catalog>>,
     pub applied_count: u64,
 }
 
@@ -1151,6 +1152,15 @@ impl StorageDeltaApplier {
     pub fn new(storage: Arc<Storage>) -> Self {
         Self {
             storage,
+            catalog: None,
+            applied_count: 0,
+        }
+    }
+
+    pub fn with_catalog(storage: Arc<Storage>, catalog: Arc<mgcatalog::Catalog>) -> Self {
+        Self {
+            storage,
+            catalog: Some(catalog),
             applied_count: 0,
         }
     }
@@ -1232,8 +1242,18 @@ impl DeltaApplier for StorageDeltaApplier {
                     self.storage.drop_label_index(*label);
                     Ok(())
                 }
-                DeltaRecord::LabelIndexStatsSet { .. } => Ok(()),
-                DeltaRecord::LabelIndexStatsClear { .. } => Ok(()),
+                DeltaRecord::LabelIndexStatsSet { label, count } => {
+                    if let Some(ref cat) = self.catalog {
+                        cat.set_label_stat(*label, *count);
+                    }
+                    Ok(())
+                }
+                DeltaRecord::LabelIndexStatsClear { label } => {
+                    if let Some(ref cat) = self.catalog {
+                        cat.set_label_stat(*label, 0);
+                    }
+                    Ok(())
+                }
                 // ── Label-property indices ─────────────────────────────────
                 DeltaRecord::LabelPropertyIndexCreate { label, property } => {
                     self.storage.create_label_property_index(*label, *property);
@@ -1243,8 +1263,18 @@ impl DeltaApplier for StorageDeltaApplier {
                     self.storage.drop_label_property_index(*label, *property);
                     Ok(())
                 }
-                DeltaRecord::LabelPropertyIndexStatsSet { .. } => Ok(()),
-                DeltaRecord::LabelPropertyIndexStatsClear { .. } => Ok(()),
+                DeltaRecord::LabelPropertyIndexStatsSet { label, property, count } => {
+                    if let Some(ref cat) = self.catalog {
+                        cat.set_label_property_stat(*label, *property, *count);
+                    }
+                    Ok(())
+                }
+                DeltaRecord::LabelPropertyIndexStatsClear { label, property } => {
+                    if let Some(ref cat) = self.catalog {
+                        cat.set_label_property_stat(*label, *property, 0);
+                    }
+                    Ok(())
+                }
                 // ── Edge indices ───────────────────────────────────────────
                 DeltaRecord::EdgeIndexCreate { edge_type } => {
                     self.storage.create_edge_type_index(*edge_type);
@@ -1271,8 +1301,8 @@ impl DeltaApplier for StorageDeltaApplier {
                     self.storage.build_edge_property_index(*property);
                     Ok(())
                 }
-                DeltaRecord::GlobalEdgePropertyIndexDrop { .. } => {
-                    warn!("GlobalEdgePropertyIndexDrop delta not yet fully supported (no Storage API to drop global edge property index)");
+                DeltaRecord::GlobalEdgePropertyIndexDrop { property } => {
+                    self.storage.drop_edge_property_index(*property);
                     Ok(())
                 }
                 // ── Constraints ────────────────────────────────────────────

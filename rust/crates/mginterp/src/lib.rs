@@ -701,6 +701,8 @@ fn try_physical_execution(
     for clause in &query.clauses {
         match clause {
             Clause::Return { items, distinct, .. } => {
+                // Physical executor does not yet support DISTINCT (needs parent-child
+                // plan structure for Distinct wrapping Produce/Aggregate).
                 if *distinct {
                     return None;
                 }
@@ -749,9 +751,6 @@ fn try_physical_execution(
             }
             Clause::OptionalMatch { .. }
             | Clause::Foreach { .. }
-            | Clause::OrderBy { .. }
-            | Clause::Limit { .. }
-            | Clause::Skip { .. }
             | Clause::Call { .. }
             | Clause::With { .. }
             | Clause::Unwind { .. }
@@ -858,6 +857,9 @@ fn logical_plan_is_executable(plan: &mgplanner::LogicalPlan) -> bool {
     match &plan.op {
         LogicalOp::AllScan { .. }
         | LogicalOp::LabelScan { .. }
+        | LogicalOp::EdgeTypeScan { .. }
+        | LogicalOp::EdgeTypePropertyScan { .. }
+        | LogicalOp::EdgeExpand { .. }
         | LogicalOp::Filter { .. }
         | LogicalOp::Produce { .. }
         | LogicalOp::Sort { .. }
@@ -865,10 +867,7 @@ fn logical_plan_is_executable(plan: &mgplanner::LogicalPlan) -> bool {
         | LogicalOp::Skip { .. }
         | LogicalOp::TopN { .. }
         | LogicalOp::Distinct
-        | LogicalOp::EdgeExpand { .. }
         | LogicalOp::Aggregate { .. } => true,
-        // LabelPropertyScan requires a real index; reject until physical
-        // executor has fallback logic for missing indices.
         LogicalOp::Join { left, right, .. } => {
             logical_plan_is_executable(left) && logical_plan_is_executable(right)
         }
@@ -5560,6 +5559,12 @@ pub(crate) fn compare(a: &PropertyValue, b: &PropertyValue) -> std::cmp::Orderin
         (PropertyValue::Double(a), PropertyValue::Double(b)) => {
             a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
         }
+        (PropertyValue::Int(a), PropertyValue::Double(b)) => (*a as f64)
+            .partial_cmp(b)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        (PropertyValue::Double(a), PropertyValue::Int(b)) => a
+            .partial_cmp(&(*b as f64))
+            .unwrap_or(std::cmp::Ordering::Equal),
         (PropertyValue::String(a), PropertyValue::String(b)) => a.cmp(b),
         (PropertyValue::Bool(a), PropertyValue::Bool(b)) => a.cmp(b),
         _ => std::cmp::Ordering::Equal,

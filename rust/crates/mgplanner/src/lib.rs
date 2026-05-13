@@ -941,9 +941,7 @@ fn physical_plan_from_logical_recursive(
                 }
                 LogicalOp::Distinct => {
                     return PhysicalPlan {
-                        op: PhysicalOp::HashAggregate {
-                            group_by: vec![],
-                            aggregates: vec![],
+                        op: PhysicalOp::Distinct {
                             child: Box::new(left_phys),
                         },
                         cost: PlanCost {
@@ -1628,10 +1626,10 @@ fn ast_to_logical(query: &Query, stats: &PlanStats) -> LogicalPlan {
             }
             Clause::Return {
                 items,
-                distinct: _,
+                distinct,
                 all,
             } => {
-                if *all || !items.iter().any(|item| is_aggregate(&item.expression)) {
+                let inner = if *all || !items.iter().any(|item| is_aggregate(&item.expression)) {
                     leaf(
                         LogicalOp::Produce {
                             items: items.clone(),
@@ -1656,6 +1654,14 @@ fn ast_to_logical(query: &Query, stats: &PlanStats) -> LogicalPlan {
                         },
                         1.0,
                     )
+                };
+                if *distinct {
+                    chain(
+                        inner,
+                        leaf(LogicalOp::Distinct, 1.0),
+                    )
+                } else {
+                    inner
                 }
             }
             Clause::With {

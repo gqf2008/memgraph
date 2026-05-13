@@ -30,11 +30,20 @@ pub mod websocket;
 pub struct HttpApi {
     pub storage: Arc<Storage>,
     pub flags: mgflags::Flags,
+    query_timeout_secs: std::sync::atomic::AtomicU64,
+    memory_limit_mib: std::sync::atomic::AtomicU64,
 }
 
 impl HttpApi {
     pub fn new(storage: Arc<Storage>, flags: mgflags::Flags) -> Self {
-        Self { storage, flags }
+        let qt = flags.query_execution_timeout_secs;
+        let ml = flags.memory_limit;
+        Self {
+            storage,
+            flags,
+            query_timeout_secs: std::sync::atomic::AtomicU64::new(qt),
+            memory_limit_mib: std::sync::atomic::AtomicU64::new(ml),
+        }
     }
 
     /// Health check response.
@@ -64,6 +73,8 @@ impl HttpApi {
             "edges": ec,
             "storage_mode": self.flags.storage_mode,
             "isolation_level": self.flags.isolation_level,
+            "memory_limit": self.memory_limit_mib.load(std::sync::atomic::Ordering::Relaxed),
+            "query_timeout": self.query_timeout_secs.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -100,6 +111,8 @@ impl HttpApi {
             },
             "storage_mode": self.flags.storage_mode,
             "isolation_level": self.flags.isolation_level,
+            "memory_limit": self.memory_limit_mib.load(std::sync::atomic::Ordering::Relaxed),
+            "query_timeout": self.query_timeout_secs.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -192,8 +205,8 @@ impl HttpApi {
             "isolation_level": self.flags.isolation_level,
             "bolt_port": self.flags.bolt_port,
             "bolt_address": self.flags.bolt_server_address,
-            "memory_limit": self.flags.memory_limit,
-            "query_timeout": self.flags.query_execution_timeout_secs,
+            "memory_limit": self.memory_limit_mib.load(std::sync::atomic::Ordering::Relaxed),
+            "query_timeout": self.query_timeout_secs.load(std::sync::atomic::Ordering::Relaxed),
         })
     }
 
@@ -201,21 +214,14 @@ impl HttpApi {
     pub fn update_config(&self, key: &str, value: serde_json::Value) -> Result<(), String> {
         match key {
             "query_timeout" => {
-                if let Some(v) = value.as_u64() {
-                    // In a real implementation, this would update the runtime flag
-                    let _ = v;
-                    Ok(())
-                } else {
-                    Err("query_timeout must be an integer".into())
-                }
+                let secs = value.as_u64().ok_or("query_timeout must be an integer")?;
+                self.query_timeout_secs.store(secs, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
             }
             "memory_limit" => {
-                if let Some(v) = value.as_u64() {
-                    let _ = v;
-                    Ok(())
-                } else {
-                    Err("memory_limit must be an integer".into())
-                }
+                let mib = value.as_u64().ok_or("memory_limit must be an integer")?;
+                self.memory_limit_mib.store(mib, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
             }
             _ => Err(format!("config key '{}' is not runtime mutable", key)),
         }
@@ -925,5 +931,21 @@ mod tests {
         let stats = api.get_stats();
         assert_eq!(stats["vertices"], 2);
         assert_eq!(stats["edges"], 1);
+    }
+
+    #[test]
+    fn test_runtime_config_update() {
+        let api = make_api();
+        let config = api.get_config();
+        let initial_timeout = config["query_timeout"].as_u64().unwrap();
+
+        api.update_config("query_timeout", serde_json::json!(120)).unwrap();
+        assert_eq!(api.query_timeout_secs.load(std::sync::atomic::Ordering::Relaxed), 120);
+
+        api.update_config("memory_limit", serde_json::json!(2048)).unwrap();
+        assert_eq!(api.memory_limit_mib.load(std::sync::atomic::Ordering::Relaxed), 2048);
+
+        assert!(api.update_config("query_timeout", serde_json::json!("abc")).is_err());
+        api.update_config("query_timeout", serde_json::json!(initial_timeout)).unwrap();
     }
 }

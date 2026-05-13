@@ -1058,9 +1058,13 @@ fn print_users(auth: &mgauth::AuthStore) {
     }
 }
 
-fn print_roles(_auth: &mgauth::AuthStore) {
-    // AuthStore doesn't directly expose roles; show a placeholder
-    println!("Roles: admin, read_write, read_only");
+fn print_roles(auth: &mgauth::AuthStore) {
+    let roles = auth.list_roles();
+    if roles.is_empty() {
+        println!("Roles: (none defined)");
+    } else {
+        println!("Roles: {}", roles.join(", "));
+    }
 }
 
 fn print_indexes(storage: &Storage, catalog: &Catalog) {

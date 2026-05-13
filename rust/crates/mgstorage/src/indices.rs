@@ -339,6 +339,19 @@ impl EdgePropertyIndex {
     pub fn clear(&self) {
         self.index.clear();
     }
+
+    /// Remove all entries for a specific property from the index.
+    pub fn remove_property(&self, prop: PropertyId) {
+        let start = (prop, Gid::from_uint(0));
+        let keys: Vec<_> = self.index
+            .range(start..)
+            .take_while(|entry| entry.key().0 == prop)
+            .map(|entry| *entry.key())
+            .collect();
+        for key in keys {
+            self.index.remove(&key);
+        }
+    }
 }
 
 /// Thread-safe reference-counted index statistics.

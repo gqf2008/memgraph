@@ -13113,3 +13113,15 @@ fn e2e_union_dedup() {
     // UNION deduplicates — 'Alice' should appear once
     assert_eq!(result.rows.len(), 1);
 }
+
+#[test]
+fn e2e_physical_plan_edge_expand() {
+    let ctx = TestCtx::new();
+    ctx.run("CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})").unwrap();
+    ctx.run("CREATE (a2:Person {name: 'Carol'})-[:KNOWS]->(b2:Person {name: 'Dave'})").unwrap();
+
+    let result = ctx.run("MATCH (a)-[r:KNOWS]->(b) RETURN b.name AS name ORDER BY name LIMIT 1").unwrap();
+    assert_rows_eq(&result, vec![
+        vec![("name", PropertyValue::String("Bob".to_string()))],
+    ]);
+}

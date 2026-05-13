@@ -508,6 +508,11 @@ impl AuthStore {
         self.users.read().unwrap().values().cloned().collect()
     }
 
+    /// Look up a user by username.
+    pub fn get_user(&self, username: &str) -> Option<User> {
+        self.users.read().unwrap().get(username).cloned()
+    }
+
     /// Get audit log entries (newest first).
     pub fn get_audit_log(&self) -> Vec<AuditEvent> {
         let log = self.audit_log.read().unwrap();

@@ -2182,6 +2182,7 @@ dependencies = [
  "mgslk",
  "mgstorage",
  "rand",
+ "serde_json",
 ]
 
 [[package]]
@@ -2309,6 +2310,7 @@ dependencies = [
 name = "mgrepl"
 version = "0.1.0"
 dependencies = [
+ "mgcatalog",
  "mgcore",
  "mgdurability",
  "mgrpc",
