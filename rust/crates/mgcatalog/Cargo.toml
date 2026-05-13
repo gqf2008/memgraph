@@ -1,0 +1,10 @@
+[package]
+name = "mgcatalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mgcore = { path = "../mgcore" }
+serde = { workspace = true }

@@ -1,0 +1,22 @@
+[package]
+name = "mghttp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mgcore.workspace = true
+mgstorage.workspace = true
+mgflags.workspace = true
+mginterp.workspace = true
+mgcatalog.workspace = true
+mgparser.workspace = true
+mgplanner.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true

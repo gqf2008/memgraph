@@ -146,3 +146,5 @@ mgcxx/src/
 mgcxx/text_search/target/
 mgcxx/tmp/
 tools/versioned_graph_mcp/
+/graphify-out
+/rust/tests

@@ -1,0 +1,16 @@
+[package]
+name = "mgdurability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mgcore = { path = "../mgcore" }
+mgslk = { path = "../mgslk" }
+mgstorage = { path = "../mgstorage" }
+mgcatalog = { path = "../mgcatalog" }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

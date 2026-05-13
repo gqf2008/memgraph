@@ -1,0 +1,17 @@
+[package]
+name = "mgrepl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mgrpc = { path = "../mgrpc" }
+mgdurability = { path = "../mgdurability" }
+mgcore = { path = "../mgcore" }
+mgstorage = { path = "../mgstorage" }
+mgcatalog = { path = "../mgcatalog" }
+mgslk = { path = "../mgslk" }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+serde = { workspace = true }

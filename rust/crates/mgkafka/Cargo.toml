@@ -1,0 +1,12 @@
+[package]
+name = "mgkafka"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Zero external dependencies — pure Rust std-only implementation
+[dependencies]
+mgcore = { path = "../mgcore" }
+mgstorage = { path = "../mgstorage" }
+mginterp = { path = "../mginterp" }

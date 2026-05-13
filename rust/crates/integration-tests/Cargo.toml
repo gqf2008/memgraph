@@ -1,0 +1,47 @@
+[package]
+name = "integration-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+mgcore = { path = "../mgcore" }
+mgparser = { path = "../mgparser" }
+mgstorage = { path = "../mgstorage" }
+mginterp = { path = "../mginterp" }
+mgcatalog = { path = "../mgcatalog" }
+mgauth = { path = "../mgauth" }
+mgdbms = { path = "../mgdbms" }
+mgvector = { path = "../mgvector" }
+mgflags = { path = "../mgflags" }
+mgrepl = { path = "../mgrepl" }
+mgrpc = { path = "../mgrpc" }
+mgdurability = { path = "../mgdurability" }
+tempfile = "3"
+libc = "0.2"
+
+[[test]]
+name = "e2e"
+path = "tests/e2e.rs"
+
+[[test]]
+name = "consistency"
+path = "tests/consistency.rs"
+
+[[test]]
+name = "replication"
+path = "tests/replication.rs"
+
+[[test]]
+name = "multi_node"
+path = "tests/multi_node.rs"
+
+[[test]]
+name = "jepsen_linearizability"
+path = "tests/jepsen_linearizability.rs"
+
+[[test]]
+name = "jepsen_sequential"
+path = "tests/jepsen_sequential.rs"
