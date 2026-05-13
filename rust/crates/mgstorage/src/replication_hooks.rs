@@ -47,7 +47,25 @@ pub enum ReplicationEvent {
         key: PropertyId,
         value: PropertyValue,
     },
+    EdgeChangeType {
+        gid: Gid,
+        old_type: EdgeTypeId,
+        new_type: EdgeTypeId,
+    },
+    EdgeSetFrom {
+        gid: Gid,
+        old_from: Gid,
+        new_from: Gid,
+    },
+    EdgeSetTo {
+        gid: Gid,
+        old_to: Gid,
+        new_to: Gid,
+    },
     TransactionCommit {
+        timestamp: u64,
+    },
+    TransactionStart {
         timestamp: u64,
     },
     IndexCreate {
@@ -158,6 +176,18 @@ impl BufferedReplicationHook {
                     key: *key,
                     value: value.clone(),
                 }]
+            }
+            WalRecord::EdgeChangeType { gid, old_type, new_type } => {
+                vec![ReplicationEvent::EdgeChangeType { gid: *gid, old_type: *old_type, new_type: *new_type }]
+            }
+            WalRecord::EdgeSetFrom { gid, old_from, new_from } => {
+                vec![ReplicationEvent::EdgeSetFrom { gid: *gid, old_from: *old_from, new_from: *new_from }]
+            }
+            WalRecord::EdgeSetTo { gid, old_to, new_to } => {
+                vec![ReplicationEvent::EdgeSetTo { gid: *gid, old_to: *old_to, new_to: *new_to }]
+            }
+            WalRecord::TransactionStart { timestamp } => {
+                vec![ReplicationEvent::TransactionStart { timestamp: *timestamp }]
             }
             WalRecord::TransactionEnd { timestamp, .. } => {
                 vec![ReplicationEvent::TransactionCommit {

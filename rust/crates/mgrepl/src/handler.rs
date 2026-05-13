@@ -194,7 +194,10 @@ impl ReplicationFilter {
             | DeltaRecord::VertexSetProperty { .. } => (crate::delta_gid(delta), true),
             DeltaRecord::EdgeCreate { .. }
             | DeltaRecord::EdgeDelete { .. }
-            | DeltaRecord::EdgeSetProperty { .. } => (None, false),
+            | DeltaRecord::EdgeSetProperty { .. }
+            | DeltaRecord::EdgeChangeType { .. }
+            | DeltaRecord::EdgeSetFrom { .. }
+            | DeltaRecord::EdgeSetTo { .. } => (None, false),
             _ => {
                 // Schema operations pass through unless vertices_only is set
                 return !self.vertices_only;
@@ -1226,6 +1229,15 @@ impl DeltaApplier for StorageDeltaApplier {
                 DeltaRecord::EdgeSetProperty { gid, key, value } => self.with_tx(|tx| {
                     self.storage
                         .edge_set_property(tx, *gid, *key, value.clone())
+                }),
+                DeltaRecord::EdgeChangeType { gid, new_type, .. } => self.with_tx(|tx| {
+                    self.storage.edge_change_type(tx, *gid, *new_type)
+                }),
+                DeltaRecord::EdgeSetFrom { gid, new_from, .. } => self.with_tx(|tx| {
+                    self.storage.edge_set_from(tx, *gid, *new_from)
+                }),
+                DeltaRecord::EdgeSetTo { gid, new_to, .. } => self.with_tx(|tx| {
+                    self.storage.edge_set_to(tx, *gid, *new_to)
                 }),
                 // ── Transaction boundaries ─────────────────────────────────
                 DeltaRecord::TransactionStart { timestamp: _ } => Ok(()),

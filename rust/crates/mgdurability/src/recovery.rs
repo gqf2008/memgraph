@@ -74,7 +74,10 @@ impl Recovery {
                 Err(e) => return Err(format!("WAL format detection error: {}", e)),
             };
 
-            for record in &records {
+            // Discard records from incomplete transactions (no matching TransactionEnd).
+            let committed = filter_committed_records(&records);
+
+            for record in &committed {
                 if let Err(e) = replay_record(storage, record) {
                     let msg = format!("{}", e);
                     if msg.contains("already exists") || msg.contains("not found") {
@@ -223,6 +226,45 @@ pub fn dump_snapshot(storage: &Storage, catalog: Option<&mgcatalog::Catalog>) ->
     }
 }
 
+/// Filter WAL records to only include those belonging to fully committed
+/// transactions. Records between a TransactionStart and its matching
+/// TransactionEnd are kept; records after an unmatched TransactionStart
+/// (partial/crashed transaction) are discarded.
+fn filter_committed_records(records: &[DeltaRecord]) -> Vec<DeltaRecord> {
+    let mut result = Vec::new();
+    let mut current_tx_records: Vec<DeltaRecord> = Vec::new();
+    let mut in_tx = false;
+
+    for record in records {
+        match record {
+            DeltaRecord::TransactionStart { .. } => {
+                // Start of a new transaction bracket
+                in_tx = true;
+                current_tx_records.clear();
+            }
+            DeltaRecord::TransactionEnd { .. } => {
+                // Transaction completed — emit all buffered records + the end marker
+                if in_tx {
+                    result.extend(current_tx_records.drain(..));
+                    result.push(record.clone());
+                    in_tx = false;
+                }
+            }
+            _ => {
+                if in_tx {
+                    current_tx_records.push(record.clone());
+                } else {
+                    // Records outside any transaction bracket (pre-TransactionStart era)
+                    result.push(record.clone());
+                }
+            }
+        }
+    }
+
+    // Discard any remaining buffered records (partial transaction from crash)
+    result
+}
+
 /// Replay a single delta record onto the storage engine.
 /// Uses short-lived transactions; each successful record is committed.
 pub fn replay_record(storage: &Storage, record: &DeltaRecord) -> Result<(), StorageError> {
@@ -238,6 +280,15 @@ pub fn replay_record(storage: &Storage, record: &DeltaRecord) -> Result<(), Stor
         }
         DeltaRecord::EdgeSetProperty { gid, key, value } => {
             storage.edge_set_property(&tx, *gid, *key, value.clone())
+        }
+        DeltaRecord::EdgeChangeType { gid, new_type, .. } => {
+            storage.edge_change_type(&tx, *gid, *new_type)
+        }
+        DeltaRecord::EdgeSetFrom { gid, new_from, .. } => {
+            storage.edge_set_from(&tx, *gid, *new_from)
+        }
+        DeltaRecord::EdgeSetTo { gid, new_to, .. } => {
+            storage.edge_set_to(&tx, *gid, *new_to)
         }
         DeltaRecord::EdgeCreate {
             gid,

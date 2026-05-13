@@ -426,6 +426,22 @@ impl ReplicationManager {
                 key: *key,
                 value: value.clone(),
             }),
+            WalRecord::EdgeChangeType { gid, old_type, new_type } => Some(DeltaRecord::EdgeChangeType {
+                gid: *gid,
+                old_type: *old_type,
+                new_type: *new_type,
+            }),
+            WalRecord::EdgeSetFrom { gid, old_from, new_from } => Some(DeltaRecord::EdgeSetFrom {
+                gid: *gid,
+                old_from: *old_from,
+                new_from: *new_from,
+            }),
+            WalRecord::EdgeSetTo { gid, old_to, new_to } => Some(DeltaRecord::EdgeSetTo {
+                gid: *gid,
+                old_to: *old_to,
+                new_to: *new_to,
+            }),
+            WalRecord::TransactionStart { timestamp } => Some(DeltaRecord::TransactionStart { timestamp: *timestamp }),
             WalRecord::TransactionEnd { .. } => None,
         }
     }

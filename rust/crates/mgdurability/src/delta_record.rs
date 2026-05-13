@@ -82,6 +82,9 @@ pub const DELTA_TTL_OPERATION: u8 = 0x78;
 pub const DELTA_TEXT_EDGE_INDEX_CREATE: u8 = 0x79;
 pub const DELTA_DESCRIPTION_SET: u8 = 0x7a;
 pub const DELTA_DESCRIPTION_DELETE: u8 = 0x7b;
+pub const DELTA_EDGE_CHANGE_TYPE: u8 = 0x7c;
+pub const DELTA_EDGE_SET_FROM: u8 = 0x7d;
+pub const DELTA_EDGE_SET_TO: u8 = 0x7e;
 
 pub const VALUE_FALSE: u8 = 0x00;
 pub const VALUE_TRUE: u8 = 0xff;
@@ -126,6 +129,21 @@ pub enum DeltaRecord {
         gid: Gid,
         key: PropertyId,
         value: PropertyValue,
+    },
+    EdgeChangeType {
+        gid: Gid,
+        old_type: EdgeTypeId,
+        new_type: EdgeTypeId,
+    },
+    EdgeSetFrom {
+        gid: Gid,
+        old_from: Gid,
+        new_from: Gid,
+    },
+    EdgeSetTo {
+        gid: Gid,
+        old_to: Gid,
+        new_to: Gid,
     },
 
     // Transaction boundaries
@@ -302,6 +320,9 @@ impl DeltaRecord {
             DeltaRecord::EdgeCreate { .. } => DELTA_EDGE_CREATE,
             DeltaRecord::EdgeDelete { .. } => DELTA_EDGE_DELETE,
             DeltaRecord::EdgeSetProperty { .. } => DELTA_EDGE_SET_PROPERTY,
+            DeltaRecord::EdgeChangeType { .. } => DELTA_EDGE_CHANGE_TYPE,
+            DeltaRecord::EdgeSetFrom { .. } => DELTA_EDGE_SET_FROM,
+            DeltaRecord::EdgeSetTo { .. } => DELTA_EDGE_SET_TO,
             DeltaRecord::TransactionStart { .. } => DELTA_TRANSACTION_START,
             DeltaRecord::TransactionEnd { .. } => DELTA_TRANSACTION_END,
             DeltaRecord::LabelIndexCreate { .. } => DELTA_LABEL_INDEX_CREATE,
@@ -394,6 +415,21 @@ impl SlkSave for DeltaRecord {
                 gid.slk_save(builder);
                 key.slk_save(builder);
                 value.slk_save(builder);
+            }
+            DeltaRecord::EdgeChangeType { gid, old_type, new_type } => {
+                gid.slk_save(builder);
+                old_type.slk_save(builder);
+                new_type.slk_save(builder);
+            }
+            DeltaRecord::EdgeSetFrom { gid, old_from, new_from } => {
+                gid.slk_save(builder);
+                old_from.slk_save(builder);
+                new_from.slk_save(builder);
+            }
+            DeltaRecord::EdgeSetTo { gid, old_to, new_to } => {
+                gid.slk_save(builder);
+                old_to.slk_save(builder);
+                new_to.slk_save(builder);
             }
             DeltaRecord::TransactionStart { timestamp } => {
                 timestamp.slk_save(builder);
@@ -603,6 +639,21 @@ impl SlkLoad for DeltaRecord {
                 gid: Gid::slk_load(reader)?,
                 key: PropertyId::slk_load(reader)?,
                 value: PropertyValue::slk_load(reader)?,
+            }),
+            DELTA_EDGE_CHANGE_TYPE => Ok(DeltaRecord::EdgeChangeType {
+                gid: Gid::slk_load(reader)?,
+                old_type: EdgeTypeId::slk_load(reader)?,
+                new_type: EdgeTypeId::slk_load(reader)?,
+            }),
+            DELTA_EDGE_SET_FROM => Ok(DeltaRecord::EdgeSetFrom {
+                gid: Gid::slk_load(reader)?,
+                old_from: Gid::slk_load(reader)?,
+                new_from: Gid::slk_load(reader)?,
+            }),
+            DELTA_EDGE_SET_TO => Ok(DeltaRecord::EdgeSetTo {
+                gid: Gid::slk_load(reader)?,
+                old_to: Gid::slk_load(reader)?,
+                new_to: Gid::slk_load(reader)?,
             }),
             DELTA_TRANSACTION_START => Ok(DeltaRecord::TransactionStart {
                 timestamp: u64::slk_load(reader)?,

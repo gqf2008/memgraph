@@ -183,6 +183,24 @@ pub enum WalRecord {
         key: PropertyId,
         value: PropertyValue,
     },
+    EdgeChangeType {
+        gid: Gid,
+        old_type: EdgeTypeId,
+        new_type: EdgeTypeId,
+    },
+    EdgeSetFrom {
+        gid: Gid,
+        old_from: Gid,
+        new_from: Gid,
+    },
+    EdgeSetTo {
+        gid: Gid,
+        old_to: Gid,
+        new_to: Gid,
+    },
+    TransactionStart {
+        timestamp: u64,
+    },
     TransactionEnd {
         timestamp: u64,
         commit_timestamp: u64,
@@ -531,6 +549,9 @@ impl Storage {
         let tx = Arc::new(self.transaction_engine.begin(isolation_level));
         let mut ts = self.active_timestamps.write().unwrap();
         *ts.entry(tx.start_timestamp).or_insert(0) += 1;
+        self.append_wal(&WalRecord::TransactionStart {
+            timestamp: tx.id.0,
+        });
         tx
     }
 
@@ -1043,6 +1064,12 @@ impl Storage {
         let vertex = vertices
             .get_mut(&gid)
             .ok_or(StorageError::VertexNotFound(gid))?;
+
+        for label in &vertex.labels {
+            if let Err(e) = self.constraints.check_type(*label, key, &value) {
+                return Err(StorageError::ConstraintViolation(format!("{:?}", e)));
+            }
+        }
 
         let old_value = Some(vertex.properties.get(key).clone());
         let old_properties = vertex.properties.clone();
@@ -1881,6 +1908,87 @@ impl Storage {
 
         self.fire_triggers(crate::triggers::TriggerEvent::EdgeUpdate, None, gid);
 
+        Ok(())
+    }
+
+    /// Change the type of an existing edge.
+    pub fn edge_change_type(
+        &self,
+        tx: &Transaction,
+        gid: Gid,
+        new_type: EdgeTypeId,
+    ) -> Result<(), StorageError> {
+        tx.record_write(gid);
+        let mut edges = self.edges.write().unwrap();
+        let _edge = edges.get_mut(&gid).ok_or(StorageError::EdgeNotFound(gid))?;
+        let entry = self.edge_index.get(&gid);
+        let (old_type, from_v, to_v) = match entry {
+            Some(e) => (e.edge_type, e.from_vertex, e.to_vertex),
+            None => (EdgeTypeId::from(0u32), Gid::from_uint(0), Gid::from_uint(0)),
+        };
+
+        self.edge_type_index.remove_edge(old_type, gid);
+        self.edge_type_index.add_edge(new_type, gid);
+
+        self.edge_index.insert(gid, EdgeIndexEntry {
+            from_vertex: from_v,
+            to_vertex: to_v,
+            edge_type: new_type,
+        });
+
+        drop(edges);
+        self.invalidate_vertex_snapshot(gid);
+        self.append_wal(&WalRecord::EdgeChangeType { gid, old_type, new_type });
+        Ok(())
+    }
+
+    /// Change the source vertex (from) of an existing edge.
+    pub fn edge_set_from(
+        &self,
+        tx: &Transaction,
+        gid: Gid,
+        new_from: Gid,
+    ) -> Result<(), StorageError> {
+        tx.record_write(gid);
+        let entry = self.edge_index.get(&gid);
+        let (old_from, to_v, etype) = match entry {
+            Some(e) => (e.from_vertex, e.to_vertex, e.edge_type),
+            None => return Err(StorageError::EdgeNotFound(gid)),
+        };
+
+        self.edge_index.insert(gid, EdgeIndexEntry {
+            from_vertex: new_from,
+            to_vertex: to_v,
+            edge_type: etype,
+        });
+
+        self.invalidate_vertex_snapshot(gid);
+        self.append_wal(&WalRecord::EdgeSetFrom { gid, old_from, new_from });
+        Ok(())
+    }
+
+    /// Change the destination vertex (to) of an existing edge.
+    pub fn edge_set_to(
+        &self,
+        tx: &Transaction,
+        gid: Gid,
+        new_to: Gid,
+    ) -> Result<(), StorageError> {
+        tx.record_write(gid);
+        let entry = self.edge_index.get(&gid);
+        let (from_v, old_to, etype) = match entry {
+            Some(e) => (e.from_vertex, e.to_vertex, e.edge_type),
+            None => return Err(StorageError::EdgeNotFound(gid)),
+        };
+
+        self.edge_index.insert(gid, EdgeIndexEntry {
+            from_vertex: from_v,
+            to_vertex: new_to,
+            edge_type: etype,
+        });
+
+        self.invalidate_vertex_snapshot(gid);
+        self.append_wal(&WalRecord::EdgeSetTo { gid, old_to, new_to });
         Ok(())
     }
 

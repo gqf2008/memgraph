@@ -73,6 +73,18 @@ impl WalAppender for ServerWalWriter {
             WalRecord::EdgeSetProperty { gid, key, value } => {
                 mgdurability::DeltaRecord::EdgeSetProperty { gid, key, value }
             }
+            WalRecord::EdgeChangeType { gid, old_type, new_type } => {
+                mgdurability::DeltaRecord::EdgeChangeType { gid, old_type, new_type }
+            }
+            WalRecord::EdgeSetFrom { gid, old_from, new_from } => {
+                mgdurability::DeltaRecord::EdgeSetFrom { gid, old_from, new_from }
+            }
+            WalRecord::EdgeSetTo { gid, old_to, new_to } => {
+                mgdurability::DeltaRecord::EdgeSetTo { gid, old_to, new_to }
+            }
+            WalRecord::TransactionStart { timestamp } => {
+                mgdurability::DeltaRecord::TransactionStart { timestamp }
+            }
             WalRecord::TransactionEnd {
                 timestamp,
                 commit_timestamp,
