@@ -69,7 +69,7 @@ pub enum LogicalOp {
         condition: Expression,
     },
     Project {
-        expressions: Vec<Expression>,
+        items: Vec<mgparser::ast::ReturnItem>,
     },
     Join {
         left: Box<LogicalPlan>,
@@ -157,7 +157,7 @@ impl LogicalPlan {
             LogicalOp::EdgeTypePropertyScan { alias, edge_type, property, value } => writeln!(f, "{}EdgeTypePropertyScan(alias={:?}, edge_type={:?}, prop={:?}, val={:?}) (cost={:.2}, rows={:.0})", prefix, alias, edge_type, property, value, self.cost.total(), self.cardinality),
             LogicalOp::EdgeExpand { from_alias, edge_alias, to_alias, direction, edge_type } => writeln!(f, "{}EdgeExpand(from={:?}, edge={:?}, to={:?}, dir={:?}, type={:?}) (cost={:.2}, rows={:.0})", prefix, from_alias, edge_alias, to_alias, direction, edge_type, self.cost.total(), self.cardinality),
             LogicalOp::Filter { condition } => writeln!(f, "{}Filter({:?}) (cost={:.2}, rows={:.0})", prefix, condition, self.cost.total(), self.cardinality),
-            LogicalOp::Project { expressions } => writeln!(f, "{}Project({} exprs) (cost={:.2}, rows={:.0})", prefix, expressions.len(), self.cost.total(), self.cardinality),
+            LogicalOp::Project { items } => writeln!(f, "{}Project({} items) (cost={:.2}, rows={:.0})", prefix, items.len(), self.cost.total(), self.cardinality),
             LogicalOp::Join { left, right, join_type } => {
                 writeln!(f, "{}Join({:?}) (cost={:.2}, rows={:.0})", prefix, join_type, self.cost.total(), self.cardinality)?;
                 left.fmt_indented(f, indent + 1)?;
@@ -642,7 +642,7 @@ pub enum PhysicalOp {
         child: Box<PhysicalPlan>,
     },
     Project {
-        expressions: Vec<Expression>,
+        items: Vec<mgparser::ast::ReturnItem>,
         child: Box<PhysicalPlan>,
     },
     Produce {
@@ -822,7 +822,7 @@ fn physical_plan_from_logical_recursive(
                 cardinality: card.max(0.0),
             }
         }
-        LogicalOp::Project { expressions } => {
+        LogicalOp::Project { items } => {
             let child = physical_plan_from_logical_recursive(
                 logical.children().first().copied().unwrap_or(&LogicalPlan {
                     op: LogicalOp::AllScan { alias: None },
@@ -835,7 +835,7 @@ fn physical_plan_from_logical_recursive(
             let card = child.cardinality;
             PhysicalPlan {
                 op: PhysicalOp::Project {
-                    expressions: expressions.clone(),
+                    items: items.clone(),
                     child: Box::new(child),
                 },
                 cost: PlanCost { cpu: card, io: 0.0 },
@@ -864,10 +864,10 @@ fn physical_plan_from_logical_recursive(
                         cardinality: left_card,
                     };
                 }
-                LogicalOp::Project { expressions } => {
+                LogicalOp::Project { items } => {
                     return PhysicalPlan {
                         op: PhysicalOp::Project {
-                            expressions: expressions.clone(),
+                            items: items.clone(),
                             child: Box::new(left_phys),
                         },
                         cost: left_cost,
@@ -1671,7 +1671,7 @@ fn ast_to_logical(query: &Query, stats: &PlanStats) -> LogicalPlan {
                 let card = current.as_ref().map(|p| p.cardinality).unwrap_or(1.0);
                 let mut child = leaf(
                     LogicalOp::Project {
-                        expressions: items.iter().map(|i| i.expression.clone()).collect(),
+                        items: items.clone(),
                     },
                     card,
                 );
@@ -2165,7 +2165,7 @@ fn pushdown_limit(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
                     };
                 }
                 // Push Limit through Project: Project doesn't affect row count.
-                if let LogicalOp::Project { expressions } = &right.op {
+                if let LogicalOp::Project { items } = &right.op {
                     let new_left = LogicalPlan {
                         op: LogicalOp::Limit { count: *count },
                         cost: left.cost.clone(),
@@ -2174,7 +2174,7 @@ fn pushdown_limit(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
                     let new_right = pushdown_limit(
                         LogicalPlan {
                             op: LogicalOp::Project {
-                                expressions: expressions.clone(),
+                                items: items.clone(),
                             },
                             cost: right.cost.clone(),
                             cardinality: right.cardinality,
@@ -2284,7 +2284,7 @@ fn pushdown_skip(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
                         cardinality: card,
                     };
                 }
-                if let LogicalOp::Project { expressions } = &right.op {
+                if let LogicalOp::Project { items } = &right.op {
                     let new_left = LogicalPlan {
                         op: LogicalOp::Skip { count: *count },
                         cost: left.cost.clone(),
@@ -2293,7 +2293,7 @@ fn pushdown_skip(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
                     let new_right = pushdown_skip(
                         LogicalPlan {
                             op: LogicalOp::Project {
-                                expressions: expressions.clone(),
+                                items: items.clone(),
                             },
                             cost: right.cost.clone(),
                             cardinality: right.cardinality,
@@ -2352,8 +2352,8 @@ fn pushdown_filter(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
         } => {
             // Check for Filter on top of Project in the left branch.
             if let LogicalOp::Filter { ref condition } = left.op {
-                if let LogicalOp::Project { ref expressions } = right.op {
-                    if filter_references_preserved(condition, expressions) {
+                if let LogicalOp::Project { ref items } = right.op {
+                    if filter_references_preserved(condition, items) {
                         let new_left = LogicalPlan {
                             op: LogicalOp::Filter {
                                 condition: condition.clone(),
@@ -2364,7 +2364,7 @@ fn pushdown_filter(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
                         let new_right = pushdown_filter(
                             LogicalPlan {
                                 op: LogicalOp::Project {
-                                    expressions: expressions.clone(),
+                                    items: items.clone(),
                                 },
                                 cost: right.cost.clone(),
                                 cardinality: right.cardinality,
@@ -2415,15 +2415,18 @@ fn pushdown_filter(plan: LogicalPlan, _cm: &CostModel) -> LogicalPlan {
 
 /// Check whether a filter condition only references identifiers that are
 /// preserved (not transformed) by the projection.
-fn filter_references_preserved(condition: &Expression, expressions: &[Expression]) -> bool {
+fn filter_references_preserved(condition: &Expression, items: &[mgparser::ast::ReturnItem]) -> bool {
     let mut referenced = Vec::new();
     collect_identifiers(condition, &mut referenced);
-    let projected_aliases: std::collections::HashSet<String> = expressions
+    let projected_aliases: std::collections::HashSet<String> = items
         .iter()
-        .filter_map(|e| match e {
-            Expression::Identifier(alias) => Some(alias.clone()),
-            _ => None,
-        })
+        .filter_map(|item| item.alias.clone().or_else(|| {
+            if let Expression::Identifier(name) = &item.expression {
+                Some(name.clone())
+            } else {
+                None
+            }
+        }))
         .collect();
     referenced.iter().all(|id| projected_aliases.contains(id))
 }
@@ -3267,7 +3270,7 @@ fn format_op(op: &LogicalOp) -> String {
             )
         }
         LogicalOp::Filter { condition } => format!("Filter({:?})", condition),
-        LogicalOp::Project { expressions } => format!("Project({} exprs)", expressions.len()),
+        LogicalOp::Project { items } => format!("Project({} items)", items.len()),
         LogicalOp::Join { join_type, .. } => format!("Join({:?})", join_type),
         LogicalOp::Sort { key } => format!("Sort({} keys)", key.len()),
         LogicalOp::Limit { count } => format!("Limit({})", count),
@@ -3742,11 +3745,11 @@ mod tests {
             }),
             Box::new(Expression::Int(30)),
         );
-        let expressions = vec![Expression::Identifier("n".into())];
-        assert!(filter_references_preserved(&condition, &expressions));
+        let items = vec![mgparser::ast::ReturnItem { expression: Expression::Identifier("n".into()), alias: None }];
+        assert!(filter_references_preserved(&condition, &items));
 
-        let expressions2 = vec![Expression::Identifier("m".into())];
-        assert!(!filter_references_preserved(&condition, &expressions2));
+        let items2 = vec![mgparser::ast::ReturnItem { expression: Expression::Identifier("m".into()), alias: None }];
+        assert!(!filter_references_preserved(&condition, &items2));
     }
 
     #[test]
@@ -4656,7 +4659,7 @@ mod tests {
                 }),
                 right: Box::new(LogicalPlan {
                     op: LogicalOp::Project {
-                        expressions: vec![Expression::Identifier("n".into())],
+                        items: vec![mgparser::ast::ReturnItem { expression: Expression::Identifier("n".into()), alias: None }],
                     },
                     cost: PlanCost::default(),
                     cardinality: 100.0,
@@ -4718,7 +4721,7 @@ mod tests {
                 }),
                 right: Box::new(LogicalPlan {
                     op: LogicalOp::Project {
-                        expressions: vec![Expression::Identifier("a".into())],
+                        items: vec![mgparser::ast::ReturnItem { expression: Expression::Identifier("a".into()), alias: None }],
                     },
                     cost: PlanCost::default(),
                     cardinality: 100.0,

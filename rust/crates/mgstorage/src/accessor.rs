@@ -287,13 +287,14 @@ impl<'a> DbAccessor<'a> {
         self.storage.create_label_index(label)
     }
 
-    pub fn create_label_property_index(&self, label: LabelId, property: PropertyId) -> bool {
+    pub fn create_label_property_index(&self, label: LabelId, property: PropertyId) -> (bool, u64) {
         let created = self.storage.create_label_property_index(label, property);
         if created {
-            // Backfill: index existing vertices that match
-            self.storage.build_label_property_index(label, property);
+            let count = self.storage.build_label_property_index(label, property);
+            (true, count)
+        } else {
+            (false, 0)
         }
-        created
     }
 
     pub fn create_edge_property_index(&self, property: PropertyId) -> bool {

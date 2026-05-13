@@ -861,6 +861,7 @@ fn logical_plan_is_executable(plan: &mgplanner::LogicalPlan) -> bool {
         | LogicalOp::EdgeTypePropertyScan { .. }
         | LogicalOp::EdgeExpand { .. }
         | LogicalOp::Filter { .. }
+        | LogicalOp::Project { .. }
         | LogicalOp::Produce { .. }
         | LogicalOp::Sort { .. }
         | LogicalOp::Limit { .. }
@@ -1278,7 +1279,16 @@ pub(crate) fn exec_clauses_with_binding(
             }
             Clause::CreateIndex { label, property } => {
                 storage.create_label_index(*label);
-                storage.create_label_property_index(*label, *property);
+                if let Some(cat) = crate::eval::active_catalog() {
+                    cat.set_label_stat(*label, storage.vertices_by_label(*label).len() as u64);
+                }
+                let created = storage.create_label_property_index(*label, *property);
+                if created {
+                    let count = storage.build_label_property_index(*label, *property);
+                    if let Some(cat) = crate::eval::active_catalog() {
+                        cat.set_label_property_stat(*label, *property, count);
+                    }
+                }
             }
             Clause::DropIndex { label, property } => {
                 storage.drop_label_property_index(*label, *property);
@@ -1663,10 +1673,12 @@ pub(crate) fn exec_clauses_with_binding(
             }
             Clause::CommitTransaction => {}
             Clause::RollbackTransaction => {}
-            Clause::SetStorageMode { mode: _ } => {
-                // Storage mode is a runtime config change handled by the server.
-                // The parser validates the mode; actual mode switching is
-                // delegated to the server layer.
+            Clause::SetStorageMode { mode } => {
+                if matches!(mode, mgparser::ast::StorageMode::OnDiskTransactional) {
+                    return Err(ExecError::Runtime(
+                        "ON_DISK storage mode is not yet implemented in the Rust version".into(),
+                    ));
+                }
             }
         }
     } // for loop

@@ -268,15 +268,22 @@ fn execute_plan_rows(
             }
             Ok(rows)
         }
-        PhysicalOp::Project { expressions, child } => {
+        PhysicalOp::Project { items, child } => {
             let child_rows = execute_plan_rows(storage, &child.op, tx)?;
             let mut rows = Vec::new();
             for row in child_rows {
                 crate::check_query_timeout()?;
                 let mut new_row = ResultRow::new();
-                for (i, expr) in expressions.iter().enumerate() {
-                    let val = eval_expression_with_storage(expr, &row, Some(storage));
-                    new_row.insert(format!("col_{}", i), val);
+                for (i, item) in items.iter().enumerate() {
+                    let val = eval_expression_with_storage(&item.expression, &row, Some(storage));
+                    let col = item.alias.clone().or_else(|| {
+                        if let Expression::Identifier(name) = &item.expression {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or_else(|| format!("column_{}", i));
+                    new_row.insert(col, val);
                 }
                 rows.push(new_row);
             }
@@ -859,9 +866,12 @@ mod tests {
 
         let make_side = |alias: &str| PhysicalPlan {
             op: PhysicalOp::Project {
-                expressions: vec![Expression::Property {
-                    object: Box::new(Expression::Identifier(alias.to_string())),
-                    key: PropertyId::from(0),
+                items: vec![mgparser::ast::ReturnItem {
+                    expression: Expression::Property {
+                        object: Box::new(Expression::Identifier(alias.to_string())),
+                        key: PropertyId::from(0),
+                    },
+                    alias: None,
                 }],
                 child: Box::new(PhysicalPlan {
                     op: PhysicalOp::SeqScan { alias: Some(alias.to_string()), label: None },

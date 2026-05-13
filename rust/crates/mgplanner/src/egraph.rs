@@ -547,7 +547,7 @@ fn node_to_plan(expr: &RecExpr<PlanLang>, id: Id) -> LogicalPlan {
             let child = node_to_plan(expr, *child_id);
             LogicalPlan {
                 op: LogicalOp::Project {
-                    expressions: vec![],
+                    items: vec![],
                 },
                 cost: child.cost,
                 cardinality: child.cardinality,

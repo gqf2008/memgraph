@@ -13085,7 +13085,7 @@ fn e2e_set_storage_mode_in_memory_transactional() {
 fn e2e_set_storage_mode_on_disk_transactional() {
     let ctx = TestCtx::new();
     let result = ctx.run("SET STORAGE MODE ON_DISK_TRANSACTIONAL");
-    assert!(result.is_ok());
+    assert!(result.is_err());
 }
 
 // ─── UNION / UNION ALL ──────────────────────────────────────────────

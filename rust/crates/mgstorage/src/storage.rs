@@ -2607,10 +2607,11 @@ impl Storage {
 
     /// Build label-property index entries for all existing vertices that match
     /// a newly created index definition. Used during CREATE INDEX to backfill.
-    pub fn build_label_property_index(&self, label: LabelId, prop: PropertyId) {
+    pub fn build_label_property_index(&self, label: LabelId, prop: PropertyId) -> u64 {
         let gids = self.vertices_by_label(label);
         let vertices = self.vertices.read().unwrap();
         let lp_key = mgcore::types::LabelPropKey::new(label, prop);
+        let mut count = 0;
         for gid in &gids {
             if let Some(v) = vertices.get(gid) {
                 if v.deleted() {
@@ -2619,9 +2620,11 @@ impl Storage {
                 let val = v.properties.get(prop);
                 if !val.is_null() {
                     self.label_property_index.add(lp_key, *gid, val.clone());
+                    count += 1;
                 }
             }
         }
+        count
     }
 
     /// Build edge property index entries for all existing edges with a property.

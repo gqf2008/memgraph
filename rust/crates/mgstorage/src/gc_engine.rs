@@ -46,6 +46,7 @@ pub struct GcCycleStats {
     pub deltas_retained: usize,
     pub vertices_compacted: usize,
     pub edges_compacted: usize,
+    pub indices_purged: usize,
     pub memory_reclaimed_bytes: usize,
 }
 
@@ -58,6 +59,7 @@ impl Default for GcCycleStats {
             deltas_retained: 0,
             vertices_compacted: 0,
             edges_compacted: 0,
+            indices_purged: 0,
             memory_reclaimed_bytes: 0,
         }
     }
@@ -128,6 +130,8 @@ impl GcEngine {
             edges_compacted = compact_edges(storage, &policy);
         }
 
+        let indices_purged = purge_deleted_from_indices(storage);
+
         let duration = started_at.elapsed();
         let memory_reclaimed_bytes = deltas_freed * std::mem::size_of::<Delta>();
 
@@ -138,6 +142,7 @@ impl GcEngine {
             deltas_retained,
             vertices_compacted,
             edges_compacted,
+            indices_purged,
             memory_reclaimed_bytes,
         };
 
@@ -321,6 +326,37 @@ fn compact_edges(storage: &Storage, _policy: &GcPolicy) -> usize {
     }
 
     compacted
+}
+
+/// Remove deleted vertices/edges from label and label-property indices.
+fn purge_deleted_from_indices(storage: &Storage) -> usize {
+    let mut purged = 0usize;
+    let vertices = storage.vertices.read().unwrap();
+    let active_labels = storage.active_label_indices.read().unwrap();
+    let active_lp = storage.active_label_property_indices.read().unwrap();
+
+    for (gid, vertex) in vertices.iter() {
+        if vertex.deleted() {
+            for label in vertex.labels.iter() {
+                if active_labels.contains(label) {
+                    storage.label_index.remove_vertex(*label, *gid);
+                    purged += 1;
+                }
+                for &(lp_label, lp_prop) in active_lp.iter() {
+                    if &lp_label == label {
+                        let val = vertex.properties.get(lp_prop);
+                        if !val.is_null() {
+                            let lp_key = mgcore::types::LabelPropKey::new(lp_label, lp_prop);
+                            storage.label_property_index.remove(lp_key, *gid);
+                            purged += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    purged
 }
 
 /// Background GC worker that runs on a timer.
