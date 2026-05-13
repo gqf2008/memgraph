@@ -9,6 +9,59 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
+use tokio_rustls::TlsAcceptor;
+
+/// Either a plain TCP stream or a TLS-wrapped stream.
+enum BoltStream {
+    Plain(TcpStream),
+    Tls(tokio_rustls::server::TlsStream<TcpStream>),
+}
+
+impl tokio::io::AsyncRead for BoltStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BoltStream::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            BoltStream::Tls(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for BoltStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            BoltStream::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            BoltStream::Tls(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BoltStream::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
+            BoltStream::Tls(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            BoltStream::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            BoltStream::Tls(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
 
 use mgbolt::framing::MAX_CHUNK_SIZE;
 use mgbolt::handshake::{Handshake, VarInt};
@@ -248,6 +301,7 @@ pub async fn run(
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
+    tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
     port: u16,
     max_connections: usize,
 ) {
@@ -282,9 +336,22 @@ pub async fn run(
                 let auth = auth.clone();
                 let admin = admin.clone();
                 let query_cache = query_cache.clone();
+                let tls = tls_acceptor.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    handle_connection(storage, catalog, auth, admin, query_cache, stream, peer).await;
+                    if let Some(ref acceptor) = tls {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                tracing::info!("[bolt] TLS handshake completed for {}", peer);
+                                handle_connection(storage, catalog, auth, admin, query_cache, BoltStream::Tls(tls_stream), peer).await;
+                            }
+                            Err(e) => {
+                                tracing::warn!("[bolt] TLS handshake failed for {}: {}", peer, e);
+                            }
+                        }
+                    } else {
+                        handle_connection(storage, catalog, auth, admin, query_cache, BoltStream::Plain(stream), peer).await;
+                    }
                 });
             }
             Err(e) => {
@@ -300,7 +367,7 @@ async fn handle_connection(
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
-    mut stream: TcpStream,
+    mut stream: BoltStream,
     peer: std::net::SocketAddr,
 ) {
     let peer_str = peer.to_string();
@@ -935,7 +1002,7 @@ async fn handle_connection(
 
 // ─── Async framing helpers ───────────────────────────────────────────────
 
-async fn read_message(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+async fn read_message(stream: &mut BoltStream) -> std::io::Result<Vec<u8>> {
     let mut payload = Vec::new();
     loop {
         let mut size_buf = [0u8; 2];
@@ -951,7 +1018,7 @@ async fn read_message(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     Ok(payload)
 }
 
-async fn write_message(stream: &mut TcpStream, payload: &[u8]) -> std::io::Result<()> {
+async fn write_message(stream: &mut BoltStream, payload: &[u8]) -> std::io::Result<()> {
     let mut offset = 0;
     while offset < payload.len() {
         let remaining = payload.len() - offset;
@@ -967,13 +1034,13 @@ async fn write_message(stream: &mut TcpStream, payload: &[u8]) -> std::io::Resul
     stream.flush().await
 }
 
-async fn send_message(stream: &mut TcpStream, msg: &Message) -> std::io::Result<()> {
+async fn send_message(stream: &mut BoltStream, msg: &Message) -> std::io::Result<()> {
     let mut payload = Vec::new();
     msg.to_value().encode(&mut payload)?;
     write_message(stream, &payload).await
 }
 
-async fn send_failure(stream: &mut TcpStream, code: &str, message: &str) {
+async fn send_failure(stream: &mut BoltStream, code: &str, message: &str) {
     let _ = send_message(
         stream,
         &Message::Failure {

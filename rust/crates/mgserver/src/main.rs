@@ -222,6 +222,43 @@ struct Args {
     coordinator_health_interval: u64,
 }
 
+fn build_tls_acceptor(ctx: &ServerContext) -> Option<std::sync::Arc<tokio_rustls::TlsAcceptor>> {
+    let tls_guard = ctx.tls_config.lock().unwrap();
+    let tls = tls_guard.as_ref()?;
+    let certs = match std::fs::read(&tls.cert_path) {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!("Failed to read TLS certificate: {}", e);
+            return None;
+        }
+    };
+    let key = match std::fs::read(&tls.key_path) {
+        Ok(data) => data,
+        Err(e) => {
+            tracing::error!("Failed to read TLS private key: {}", e);
+            return None;
+        }
+    };
+
+    let cert_chain: Vec<rustls_pemfile::CertificateDer>] =
+        rustls_pemfile::certs(&mut std::io::BufReader::new(&certs))
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+
+    let private_key = rustls_pemfile::private_key(&mut std::io::BufReader::new(&key))
+        .ok()?
+        .flatten()?;
+
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, private_key)
+        .ok()?;
+
+    Some(std::sync::Arc::new(tokio_rustls::TlsAcceptor::from(
+        std::sync::Arc::new(server_config),
+    )))
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -536,6 +573,7 @@ async fn main() {
         let bolt_auth = auth_legacy.clone();
         let bolt_admin = ctx.admin.clone();
         let bolt_cache = ctx.query_cache.clone();
+        let bolt_tls = build_tls_acceptor(&ctx);
         Some(tokio::spawn(async move {
             bolt_server::run(
                 bolt_storage,
@@ -543,6 +581,7 @@ async fn main() {
                 bolt_auth,
                 bolt_admin,
                 bolt_cache,
+                bolt_tls,
                 port,
                 bolt_server::DEFAULT_MAX_CONNECTIONS,
             )

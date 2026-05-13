@@ -41,6 +41,8 @@ hyper-util = { workspace = true }
 http-body-util = { workspace = true }
 http-body = { workspace = true }
 bytes = { workspace = true }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"
 arrow = { version = "58", optional = true }
 parquet = { version = "58", optional = true }
 

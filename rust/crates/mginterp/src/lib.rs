@@ -701,12 +701,11 @@ fn try_physical_execution(
     for clause in &query.clauses {
         match clause {
             Clause::Return { items, distinct, .. } => {
-                // Physical executor does not yet support DISTINCT (needs parent-child
-                // plan structure for Distinct wrapping Produce/Aggregate).
+                // DISTINCT requires Distinct wrapping the Produce/Aggregate in the plan;
+                // the Join-chain architecture doesn't support this correctly yet.
                 if *distinct {
                     return None;
                 }
-                // Reject subquery expressions in RETURN (column naming mismatch)
                 if items.iter().any(|item| has_subquery_expression(&item.expression)) {
                     return None;
                 }
