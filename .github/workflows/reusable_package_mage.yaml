@@ -107,7 +107,7 @@ jobs:
   BuildAndPush:
     name: "Build and Test MAGE"
     runs-on: [self-hosted, DockerMgBuild, Linux, "${{ inputs.arch == 'arm' && 'ARM64' || 'X64' }}"]
-    timeout-minutes: ${{ inputs.cugraph && 45 || 35 }}
+    timeout-minutes: ${{ (inputs.cugraph || inputs.cuda) && 45 || 35 }}
     outputs:
       s3_package_url: ${{ steps.output-url.outputs.s3_url }}
     steps:
@@ -640,3 +640,7 @@ jobs:
         if: always()
         run: |
           ./tools/ci/docker_cleanup.sh
+
+      - name: Cancel run on merge_group failure
+        if: ${{ failure() && github.event_name == 'merge_group' }}
+        uses: ./.github/actions/cancel-on-failure-in-merge-queue
