@@ -15,6 +15,15 @@ use std::sync::Arc;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 
+/// Install the ring CryptoProvider as the process-level default.
+/// rustls 0.23 requires this before any builder calls. Safe to call
+/// multiple times — subsequent calls after the first are no-ops.
+pub fn install_default_provider() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok(); // ignore AlreadyInstalled error
+}
+
 #[derive(Debug)]
 pub enum TlsError {
     Io(io::Error),
@@ -61,6 +70,7 @@ pub fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>, TlsError>
 /// C++ Bolt server which only authenticates peers at the application
 /// layer (HELLO credentials).
 pub fn server_config(cert_pem: &Path, key_pem: &Path) -> Result<Arc<ServerConfig>, TlsError> {
+    install_default_provider();
     let certs = load_certs(cert_pem)?;
     if certs.is_empty() {
         return Err(TlsError::InvalidConfig(format!(
@@ -83,6 +93,7 @@ pub fn server_config_mtls(
     key_pem: &Path,
     client_ca_pem: &Path,
 ) -> Result<Arc<ServerConfig>, TlsError> {
+    install_default_provider();
     let certs = load_certs(cert_pem)?;
     let key = load_private_key(key_pem)?;
     let mut roots = RootCertStore::empty();
@@ -107,6 +118,7 @@ pub fn server_config_mtls(
 /// programmatically. For real TLS connections, use [`client_config_with_ca`]
 /// instead.
 pub fn client_config() -> Arc<ClientConfig> {
+    install_default_provider();
     let roots = RootCertStore::empty();
     let cfg = ClientConfig::builder()
         .with_root_certificates(roots)
@@ -118,6 +130,7 @@ pub fn client_config() -> Arc<ClientConfig> {
 /// connecting to a Memgraph cluster with a private CA — the trust store
 /// only contains roots from `ca_pem`.
 pub fn client_config_with_ca(ca_pem: &Path) -> Result<Arc<ClientConfig>, TlsError> {
+    install_default_provider();
     let mut roots = RootCertStore::empty();
     for cert in load_certs(ca_pem)? {
         roots

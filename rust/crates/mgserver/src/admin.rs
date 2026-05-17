@@ -158,6 +158,8 @@ pub struct AdminState {
     user_quota: UserQuota,
     /// Server start time for uptime tracking.
     start_time: Instant,
+    /// Set to true when memory pressure is critical — new queries should be rejected.
+    memory_critical: AtomicBool,
 }
 
 impl AdminState {
@@ -182,6 +184,7 @@ impl AdminState {
             rate_limiter,
             user_quota,
             start_time: Instant::now(),
+            memory_critical: AtomicBool::new(false),
         }
     }
 
@@ -317,12 +320,37 @@ impl AdminState {
         }
     }
 
+    /// Mark memory pressure as critical — new queries will be rejected.
+    pub fn set_memory_critical(&self, critical: bool) {
+        self.memory_critical.store(critical, Ordering::SeqCst);
+    }
+
+    /// Check if memory pressure is critical. If true, new queries should be rejected.
+    pub fn is_memory_critical(&self) -> bool {
+        self.memory_critical.load(Ordering::Relaxed)
+    }
+
     pub fn is_query_killed(&self, qid: u64) -> bool {
         let flags = self.kill_flags.lock().unwrap();
         flags
             .get(&qid)
             .map(|f: &AtomicBool| f.load(Ordering::Relaxed))
             .unwrap_or(false)
+    }
+
+    /// Kill the longest-running active query to free memory. Returns the killed
+    /// query ID if any query was terminated, or None if there are no queries.
+    pub fn kill_longest_running_query(&self) -> Option<u64> {
+        let active = self.list_active_queries();
+        if active.is_empty() {
+            return None;
+        }
+        let longest = active
+            .iter()
+            .max_by_key(|q| q.started_at.elapsed().as_millis() as u64)?;
+        let qid = longest.query_id;
+        self.kill_query(qid);
+        Some(qid)
     }
 
     /// Return aggregated query statistics.

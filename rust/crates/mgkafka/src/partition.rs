@@ -72,24 +72,116 @@ pub enum LeaderElectionResult {
     Elected(i32),       // new leader node_id
     NoValidReplica,     // no ISR member is available
     AlreadyLeader(i32), // current leader is still valid
+    NotEnoughReplicas,  // can't form majority
 }
 
-/// Attempt to elect a new leader for a partition.
-/// In a real implementation this would consult ZooKeeper/KRaft.
-/// This stub picks the first replica in the ISR that is not the current leader.
+/// Controller epoch for fencing stale leaders.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControllerEpoch(u64);
+
+impl ControllerEpoch {
+    pub fn new(epoch: u64) -> Self {
+        Self(epoch)
+    }
+
+    pub fn increment(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0
+    }
+
+    pub fn is_newer_than(&self, other: ControllerEpoch) -> bool {
+        self.0 > other.0
+    }
+}
+
+/// Leader election state for a single partition.
+#[derive(Clone, Debug)]
+pub struct PartitionLeaderState {
+    pub partition: Partition,
+    pub current_leader: i32,
+    pub leader_epoch: i32,
+    pub controller_epoch: ControllerEpoch,
+    pub isr: Vec<i32>,
+    pub last_election_time: std::time::SystemTime,
+}
+
+/// Attempt to elect a new leader for a partition using a majority-based
+/// quorum algorithm. The election prefers the preferred replica first,
+/// then falls back to any ISR member that can form a majority.
+///
+/// Election rules:
+/// 1. If ISR is empty, return NoValidReplica
+/// 2. If current leader is in ISR and alive, return AlreadyLeader
+/// 3. Prefer preferred_replica if it is alive and in ISR
+/// 4. Otherwise, pick any ISR member that has majority support
 pub fn elect_leader(
     current_leader: i32,
     isr: &[i32],
-    _live_brokers: &[i32],
+    live_brokers: &[i32],
 ) -> LeaderElectionResult {
     if isr.is_empty() {
         return LeaderElectionResult::NoValidReplica;
     }
-    if isr.contains(&current_leader) {
+
+    // Check if current leader is still alive and in ISR
+    let leader_alive = live_brokers.contains(&current_leader);
+    if isr.contains(&current_leader) && leader_alive {
         return LeaderElectionResult::AlreadyLeader(current_leader);
     }
-    // Pick first available ISR member
-    LeaderElectionResult::Elected(isr[0])
+
+    // Filter ISR to only live brokers
+    let live_isr: Vec<i32> = isr
+        .iter()
+        .copied()
+        .filter(|b| live_brokers.contains(b))
+        .collect();
+
+    if live_isr.is_empty() {
+        return LeaderElectionResult::NoValidReplica;
+    }
+
+    // Check if we have a majority of the original ISR
+    let majority = (isr.len() / 2) + 1;
+    if live_isr.len() < majority {
+        return LeaderElectionResult::NotEnoughReplicas;
+    }
+
+    // Prefer the preferred replica (first in ISR) if it's alive
+    if let Some(preferred) = isr.first().copied() {
+        if live_isr.contains(&preferred) && preferred != current_leader {
+            return LeaderElectionResult::Elected(preferred);
+        }
+    }
+
+    // Fall back to any live ISR member
+    LeaderElectionResult::Elected(live_isr[0])
+}
+
+/// Perform a full leader election with controller epoch fencing.
+/// The new leader receives an incremented leader epoch to prevent
+/// stale leaders from accepting writes (fencing).
+pub fn elect_leader_with_epoch(
+    state: &mut PartitionLeaderState,
+    live_brokers: &[i32],
+) -> LeaderElectionResult {
+    let result = elect_leader(state.current_leader, &state.isr, live_brokers);
+    match result {
+        LeaderElectionResult::Elected(new_leader) => {
+            state.current_leader = new_leader;
+            state.leader_epoch += 1;
+            state.controller_epoch.increment();
+            state.last_election_time = std::time::SystemTime::now();
+            LeaderElectionResult::Elected(new_leader)
+        }
+        LeaderElectionResult::AlreadyLeader(_) => {
+            result
+        }
+        _ => result,
+    }
 }
 
 /// Replica awareness: determine if a broker hosts a replica for a partition.
@@ -183,6 +275,14 @@ mod tests {
 
     #[test]
     fn test_leader_election_new_leader() {
+        // Leader 1 is down, ISR is [2, 3], both alive — preferred is 2
+        let result = elect_leader(1, &[2, 3, 1], &[2, 3]);
+        assert_eq!(result, LeaderElectionResult::Elected(2));
+    }
+
+    #[test]
+    fn test_leader_election_leader_not_in_isr() {
+        // Current leader 1 is not in ISR at all
         let result = elect_leader(1, &[2, 3], &[2, 3]);
         assert_eq!(result, LeaderElectionResult::Elected(2));
     }
@@ -191,6 +291,52 @@ mod tests {
     fn test_leader_election_no_isr() {
         let result = elect_leader(1, &[], &[]);
         assert_eq!(result, LeaderElectionResult::NoValidReplica);
+    }
+
+    #[test]
+    fn test_leader_election_no_live_brokers() {
+        let result = elect_leader(1, &[1, 2, 3], &[]);
+        assert_eq!(result, LeaderElectionResult::NoValidReplica);
+    }
+
+    #[test]
+    fn test_leader_election_no_majority() {
+        // ISR = 3 requires 2 live for majority, only 1 is alive
+        let result = elect_leader(1, &[1, 2, 3], &[2]);
+        assert_eq!(result, LeaderElectionResult::NotEnoughReplicas);
+    }
+
+    #[test]
+    fn test_leader_election_preferred_takes_priority() {
+        // Leader 5 is dead, live ISR = [3, 7, 10], preferred is 3
+        let result = elect_leader(5, &[3, 7, 10], &[3, 7, 10]);
+        assert_eq!(result, LeaderElectionResult::Elected(3));
+    }
+
+    #[test]
+    fn test_leader_election_with_epoch_increments() {
+        let mut state = PartitionLeaderState {
+            partition: Partition { topic: "t".into(), partition: 0 },
+            current_leader: 1,
+            leader_epoch: 5,
+            controller_epoch: ControllerEpoch::new(3),
+            isr: vec![2, 3, 1],
+            last_election_time: std::time::SystemTime::now(),
+        };
+        let result = elect_leader_with_epoch(&mut state, &[2, 3]);
+        assert_eq!(result, LeaderElectionResult::Elected(2));
+        assert_eq!(state.current_leader, 2);
+        assert_eq!(state.leader_epoch, 6);
+        assert_eq!(state.controller_epoch.get(), 4);
+    }
+
+    #[test]
+    fn test_controller_epoch_is_newer() {
+        let older = ControllerEpoch::new(1);
+        let newer = ControllerEpoch::new(5);
+        assert!(newer.is_newer_than(older));
+        assert!(!older.is_newer_than(newer));
+        assert!(!older.is_newer_than(older));
     }
 
     #[test]

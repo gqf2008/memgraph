@@ -805,8 +805,11 @@ impl RaftStateMachine<TypeConfig> for CoordinatorStateMachine {
         let data = snapshot.into_inner();
         self.snapshot = Some(Snapshot {
             meta: meta.clone(),
-            snapshot: Box::new(Cursor::new(data)),
+            snapshot: Box::new(Cursor::new(data.clone())),
         });
+
+        apply_cluster_snapshot(&data, self.cluster_state.as_ref())?;
+
         Ok(())
     }
 
@@ -823,6 +826,33 @@ struct ClusterSnapshot {
     instances: Vec<crate::Instance>,
     leader_id: String,
     routes: Vec<(String, SocketAddr)>,
+}
+
+/// Deserialize a `ClusterSnapshot` and apply it to the shared `ClusterState`.
+/// Returns `Err` on deserialization failure so corrupt snapshots are not silently accepted.
+fn apply_cluster_snapshot(
+    data: &[u8],
+    cluster_state: Option<&Arc<crate::ClusterState>>,
+) -> Result<(), openraft::StorageError<CoordinatorNodeId>> {
+    let snap = bincode::deserialize::<ClusterSnapshot>(data).map_err(|e| {
+        openraft::StorageError::IO {
+            source: openraft::StorageIOError::new(
+                openraft::ErrorSubject::StateMachine,
+                openraft::ErrorVerb::Write,
+                &std::io::Error::new(std::io::ErrorKind::InvalidData, format!("deserialize cluster snapshot: {}", e)),
+            ),
+        }
+    })?;
+    if let Some(state) = cluster_state {
+        state.set_leader_id(&snap.leader_id);
+        for (db, addr) in &snap.routes {
+            state.set_route(db, *addr);
+        }
+        for inst in snap.instances {
+            state.register(inst);
+        }
+    }
+    Ok(())
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for CoordinatorStateMachine {
@@ -1077,6 +1107,9 @@ impl RaftStateMachine<TypeConfig> for PersistentCoordinatorStateMachine {
                 e,
             )
         })?;
+
+        apply_cluster_snapshot(&data, self.cluster_state.as_ref())?;
+
         Ok(())
     }
 
@@ -1178,6 +1211,7 @@ pub struct StorageBackedStateMachine {
     stored_membership: StoredMembership<CoordinatorNodeId, CoordinatorNode>,
     snapshot: Option<Snapshot<TypeConfig>>,
     storage: Option<Arc<mgstorage::storage::Storage>>,
+    cluster_state: Option<Arc<crate::ClusterState>>,
 }
 
 impl std::fmt::Debug for StorageBackedStateMachine {
@@ -1204,11 +1238,16 @@ impl StorageBackedStateMachine {
             stored_membership: StoredMembership::default(),
             snapshot: None,
             storage: None,
+            cluster_state: None,
         }
     }
 
     pub fn attach_storage(&mut self, storage: Arc<mgstorage::storage::Storage>) {
         self.storage = Some(storage);
+    }
+
+    pub fn attach_cluster_state(&mut self, state: Arc<crate::ClusterState>) {
+        self.cluster_state = Some(state);
     }
 }
 
@@ -1276,8 +1315,11 @@ impl RaftStateMachine<TypeConfig> for StorageBackedStateMachine {
         let data = snapshot.into_inner();
         self.snapshot = Some(Snapshot {
             meta: meta.clone(),
-            snapshot: Box::new(Cursor::new(data)),
+            snapshot: Box::new(Cursor::new(data.clone())),
         });
+
+        apply_cluster_snapshot(&data, self.cluster_state.as_ref())?;
+
         Ok(())
     }
 
@@ -1680,7 +1722,12 @@ mod tests {
     async fn test_state_machine_snapshot() {
         let mut sm = CoordinatorStateMachine::new();
 
-        let snapshot_data = Box::new(Cursor::new(vec![1u8, 2, 3]));
+        let snap = ClusterSnapshot {
+            instances: vec![crate::Instance::new("n1".into(), test_addr(7687), crate::InstanceRole::Main)],
+            leader_id: "leader-1".into(),
+            routes: vec![],
+        };
+        let snapshot_data = Box::new(Cursor::new(bincode::serialize(&snap).unwrap()));
         let meta = SnapshotMeta::default();
 
         sm.install_snapshot(&meta, snapshot_data).await.unwrap();
@@ -1925,13 +1972,68 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut sm = PersistentCoordinatorStateMachine::open(tmp.path()).unwrap();
 
-        let snap_data = Box::new(Cursor::new(vec![1u8, 2, 3, 4]));
+        let snap = ClusterSnapshot {
+            instances: vec![crate::Instance::new("n1".into(), test_addr(7687), crate::InstanceRole::Main)],
+            leader_id: "leader-1".into(),
+            routes: vec![],
+        };
+        let snap_bytes = bincode::serialize(&snap).unwrap();
+        let snap_data = Box::new(Cursor::new(snap_bytes.clone()));
         let meta = SnapshotMeta::default();
         sm.install_snapshot(&meta, snap_data).await.unwrap();
 
         let snapshot = sm.get_current_snapshot().await.unwrap();
         assert!(snapshot.is_some());
-        let recovered = snapshot.unwrap();
-        assert_eq!(recovered.snapshot.into_inner(), vec![1u8, 2, 3, 4]);
+        let recovered_bytes = snapshot.unwrap().snapshot.into_inner();
+        let recovered_snap: ClusterSnapshot = bincode::deserialize(&recovered_bytes).unwrap();
+        assert_eq!(recovered_snap.leader_id, "leader-1");
+    }
+
+    #[tokio::test]
+    async fn test_install_snapshot_applies_cluster_state() {
+        let state = Arc::new(crate::ClusterState::new("old-leader".into()));
+        let mut sm = CoordinatorStateMachine::new();
+        sm.attach_cluster_state(state.clone());
+
+        // Build a snapshot with instances, routes, and leader_id
+        let snap = ClusterSnapshot {
+            instances: vec![
+                crate::Instance::new("n1".into(), test_addr(7687), crate::InstanceRole::Main),
+                crate::Instance::new("n2".into(), test_addr(7688), crate::InstanceRole::Replica),
+            ],
+            leader_id: "new-leader".into(),
+            routes: vec![("db1".into(), test_addr(7687))],
+        };
+        let data = bincode::serialize(&snap).unwrap();
+
+        let meta = SnapshotMeta::default();
+        sm.install_snapshot(&meta, Box::new(Cursor::new(data))).await.unwrap();
+
+        // Verify cluster state was updated
+        assert_eq!(state.leader_id(), "new-leader");
+        assert_eq!(state.list().len(), 2);
+        assert_eq!(state.get("n1").unwrap().role, crate::InstanceRole::Main);
+        assert_eq!(state.get("n2").unwrap().role, crate::InstanceRole::Replica);
+        assert_eq!(state.get_route("db1"), Some(test_addr(7687)));
+    }
+
+    #[tokio::test]
+    async fn test_install_snapshot_without_cluster_state_is_noop() {
+        let mut sm = CoordinatorStateMachine::new();
+        // No cluster_state attached
+
+        let snap = ClusterSnapshot {
+            instances: vec![crate::Instance::new("n1".into(), test_addr(7687), crate::InstanceRole::Main)],
+            leader_id: "leader-1".into(),
+            routes: vec![("db1".into(), test_addr(7687))],
+        };
+        let data = bincode::serialize(&snap).unwrap();
+
+        let meta = SnapshotMeta::default();
+        sm.install_snapshot(&meta, Box::new(Cursor::new(data))).await.unwrap();
+
+        // Snapshot stored but no cluster_state to apply — should not panic
+        let snapshot = sm.get_current_snapshot().await.unwrap();
+        assert!(snapshot.is_some());
     }
 }

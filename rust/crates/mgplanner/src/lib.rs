@@ -65,6 +65,18 @@ pub enum LogicalOp {
         direction: Direction,
         edge_type: Option<EdgeTypeId>,
     },
+    /// Variable-length path expansion: traverse edges from min_hops to max_hops.
+    VarLengthExpand {
+        from_alias: String,
+        edge_alias: Option<String>,
+        to_alias: Option<String>,
+        direction: Direction,
+        edge_types: Vec<EdgeTypeId>,
+        edge_properties: Vec<(PropertyId, Expression)>,
+        min_hops: usize,
+        max_hops: Option<usize>,
+        path_algorithm: PathAlgorithm,
+    },
     Filter {
         condition: Expression,
     },
@@ -156,6 +168,7 @@ impl LogicalPlan {
             LogicalOp::EdgeTypeScan { alias, edge_type } => writeln!(f, "{}EdgeTypeScan(alias={:?}, edge_type={:?}) (cost={:.2}, rows={:.0})", prefix, alias, edge_type, self.cost.total(), self.cardinality),
             LogicalOp::EdgeTypePropertyScan { alias, edge_type, property, value } => writeln!(f, "{}EdgeTypePropertyScan(alias={:?}, edge_type={:?}, prop={:?}, val={:?}) (cost={:.2}, rows={:.0})", prefix, alias, edge_type, property, value, self.cost.total(), self.cardinality),
             LogicalOp::EdgeExpand { from_alias, edge_alias, to_alias, direction, edge_type } => writeln!(f, "{}EdgeExpand(from={:?}, edge={:?}, to={:?}, dir={:?}, type={:?}) (cost={:.2}, rows={:.0})", prefix, from_alias, edge_alias, to_alias, direction, edge_type, self.cost.total(), self.cardinality),
+            LogicalOp::VarLengthExpand { from_alias, edge_alias, to_alias, direction, edge_types, min_hops, max_hops, .. } => writeln!(f, "{}VarLengthExpand(from={:?}, edge={:?}, to={:?}, dir={:?}, types={:?}, hops={:?}-{:?}) (cost={:.2}, rows={:.0})", prefix, from_alias, edge_alias, to_alias, direction, edge_types, min_hops, max_hops, self.cost.total(), self.cardinality),
             LogicalOp::Filter { condition } => writeln!(f, "{}Filter({:?}) (cost={:.2}, rows={:.0})", prefix, condition, self.cost.total(), self.cardinality),
             LogicalOp::Project { items } => writeln!(f, "{}Project({} items) (cost={:.2}, rows={:.0})", prefix, items.len(), self.cost.total(), self.cardinality),
             LogicalOp::Join { left, right, join_type } => {
@@ -696,6 +709,57 @@ pub enum PhysicalOp {
     Distinct {
         child: Box<PhysicalPlan>,
     },
+    /// Write: create a vertex with labels and properties.
+    CreateVertex {
+        labels: Vec<LabelId>,
+        properties: Vec<(PropertyId, Expression)>,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: set a property on a vertex or edge.
+    SetProperty {
+        key: PropertyId,
+        value: Expression,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: remove a property from a vertex or edge.
+    RemoveProperty {
+        key: PropertyId,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: add a label to a vertex.
+    AddLabel {
+        label: LabelId,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: remove a label from a vertex.
+    RemoveLabel {
+        label: LabelId,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: delete a vertex or edge (detach=true deletes connected edges first).
+    Delete {
+        detach: bool,
+        child: Box<PhysicalPlan>,
+    },
+    /// Write: create an edge between two vertices.
+    CreateEdge {
+        edge_type: EdgeTypeId,
+        child: Box<PhysicalPlan>,
+    },
+    /// Variable-length path expansion: traverse edges from min_hops to max_hops
+    /// steps from the vertices produced by the child plan.
+    VarLengthExpand {
+        from_alias: String,
+        edge_alias: Option<String>,
+        to_alias: Option<String>,
+        direction: Direction,
+        edge_types: Vec<EdgeTypeId>,
+        edge_properties: Vec<(PropertyId, Expression)>,
+        min_hops: usize,
+        max_hops: Option<usize>,
+        path_algorithm: PathAlgorithm,
+        child: Box<PhysicalPlan>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -974,6 +1038,40 @@ fn physical_plan_from_logical_recursive(
                         cardinality: left_card * 5.0,
                     };
                 }
+                LogicalOp::VarLengthExpand {
+                    from_alias,
+                    edge_alias,
+                    to_alias,
+                    direction,
+                    edge_types,
+                    edge_properties,
+                    min_hops,
+                    max_hops,
+                    path_algorithm,
+                } => {
+                    // Unbounded paths (max=None) are capped to avoid extreme underestimation
+                let effective_max = max_hops.unwrap_or((*min_hops + 100).min(100));
+                let hop_factor = (effective_max.saturating_sub(*min_hops) + 1).max(1) as f64;
+                    return PhysicalPlan {
+                        op: PhysicalOp::VarLengthExpand {
+                            from_alias: from_alias.clone(),
+                            edge_alias: edge_alias.clone(),
+                            to_alias: to_alias.clone(),
+                            direction: *direction,
+                            edge_types: edge_types.clone(),
+                            edge_properties: edge_properties.clone(),
+                            min_hops: *min_hops,
+                            max_hops: *max_hops,
+                            path_algorithm: *path_algorithm,
+                            child: Box::new(left_phys),
+                        },
+                        cost: PlanCost {
+                            cpu: left_card * 10.0 * hop_factor,
+                            io: 0.0,
+                        },
+                        cardinality: left_card * 3.0 * hop_factor,
+                    };
+                }
                 LogicalOp::Aggregate {
                     group_by,
                     aggregates,
@@ -1228,6 +1326,75 @@ fn physical_plan_from_logical_recursive(
             cost: PlanCost { cpu: 0.0, io: 0.0 },
             cardinality: 0.0,
         },
+        // Write operators — pass through child rows and execute mutations
+        LogicalOp::CreateVertex {
+            ref labels,
+            ref properties,
+        } => {
+            let child = physical_plan_from_logical_recursive(
+                logical.children().first().copied().unwrap_or(&LogicalPlan {
+                    op: LogicalOp::AllScan { alias: None },
+                    cost: PlanCost::default(),
+                    cardinality: 0.0,
+                }),
+                cm,
+                catalog_stats,
+            );
+            PhysicalPlan {
+                op: PhysicalOp::CreateVertex {
+                    labels: labels.clone(),
+                    properties: properties.clone(),
+                    child: Box::new(child.clone()),
+                },
+                cost: child.cost.clone(),
+                cardinality: child.cardinality,
+            }
+        }
+        LogicalOp::SetProperty {
+            ref key,
+            ref value,
+        } => {
+            let child = physical_plan_from_logical_recursive(
+                logical.children().first().copied().unwrap_or(&LogicalPlan {
+                    op: LogicalOp::AllScan { alias: None },
+                    cost: PlanCost::default(),
+                    cardinality: 0.0,
+                }),
+                cm,
+                catalog_stats,
+            );
+            PhysicalPlan {
+                op: PhysicalOp::SetProperty {
+                    key: *key,
+                    value: value.clone(),
+                    child: Box::new(child.clone()),
+                },
+                cost: child.cost.clone(),
+                cardinality: child.cardinality,
+            }
+        }
+        LogicalOp::Delete {
+            detach,
+            ..
+        } => {
+            let child = physical_plan_from_logical_recursive(
+                logical.children().first().copied().unwrap_or(&LogicalPlan {
+                    op: LogicalOp::AllScan { alias: None },
+                    cost: PlanCost::default(),
+                    cardinality: 0.0,
+                }),
+                cm,
+                catalog_stats,
+            );
+            PhysicalPlan {
+                op: PhysicalOp::Delete {
+                    detach: *detach,
+                    child: Box::new(child.clone()),
+                },
+                cost: child.cost.clone(),
+                cardinality: child.cardinality,
+            }
+        }
         ref other => panic!(
             "physical_plan_from_logical_recursive: unhandled logical operator {:?}. \
              Add a conversion arm for this operator or exclude it from physical execution.",
@@ -1866,23 +2033,45 @@ fn plan_match(
 
         let mut prev_node_alias = node.alias.clone().unwrap_or_else(|| "_".to_string());
         for (edge, right_node) in &element.edges {
-            let edge_plan = leaf(
-                LogicalOp::EdgeExpand {
-                    from_alias: prev_node_alias.clone(),
-                    edge_alias: edge.alias.clone(),
-                    to_alias: right_node.alias.clone(),
-                    direction: edge.direction,
-                    edge_type: edge.edge_types.first().copied(),
-                },
-                node_card * 5.0,
-            );
+            let edge_plan = if let Some((min, max)) = edge.var_length {
+                // Variable-length edge: use VarLengthExpand
+                leaf(
+                    LogicalOp::VarLengthExpand {
+                        from_alias: prev_node_alias.clone(),
+                        edge_alias: edge.alias.clone(),
+                        to_alias: right_node.alias.clone(),
+                        direction: edge.direction,
+                        edge_types: edge.edge_types.clone(),
+                        edge_properties: edge.properties.clone(),
+                        min_hops: min,
+                        max_hops: max,
+                        path_algorithm: edge.path_algorithm,
+                    },
+                    node_card * 5.0 * (min as f64).max(1.0),
+                )
+            } else {
+                // Fixed single-hop edge
+                leaf(
+                    LogicalOp::EdgeExpand {
+                        from_alias: prev_node_alias.clone(),
+                        edge_alias: edge.alias.clone(),
+                        to_alias: right_node.alias.clone(),
+                        direction: edge.direction,
+                        edge_type: edge.edge_types.first().copied(),
+                    },
+                    node_card * 5.0,
+                )
+            };
 
             prev_node_alias = right_node.alias.clone().unwrap_or_else(|| "_".to_string());
             scan = chain(scan, edge_plan);
 
-            // Apply edge property-equality filters on the combined scan+edge result
-            if let Some(ref alias) = edge.alias {
-                for (prop_id, expr) in &edge.properties {
+            // Apply edge property-equality filters on the combined scan+edge result.
+            // Skip for variable-length edges — the VarLengthExpand traversal already
+            // filters edges by these properties during path expansion.
+            if edge.var_length.is_none() {
+                if let Some(ref alias) = edge.alias {
+                    for (prop_id, expr) in &edge.properties {
                     let card = scan.cardinality * 0.3;
                     let condition = Expression::Eq(
                         Box::new(Expression::Property {
@@ -1900,6 +2089,7 @@ fn plan_match(
                     );
                 }
             }
+            } // end if edge.var_length.is_none() for edge property filters
 
             // Apply right-node label filters
             if let Some(ref alias) = right_node.alias {
@@ -3298,6 +3488,15 @@ fn format_op(op: &LogicalOp) -> String {
         LogicalOp::Distinct => "Distinct".into(),
         LogicalOp::Union { all, .. } => format!("Union(all={})", all),
         LogicalOp::TopN { key, count } => format!("TopN({} keys, limit={})", key.len(), count),
+        LogicalOp::VarLengthExpand {
+            edge_types,
+            min_hops,
+            max_hops,
+            ..
+        } => format!(
+            "VarLengthExpand(types={:?}, hops={}-{:?})",
+            edge_types, min_hops, max_hops
+        ),
         LogicalOp::EmptyResult => "EmptyResult".into(),
     }
 }
@@ -3322,6 +3521,7 @@ fn plan_children(plan: &LogicalPlan) -> Vec<&LogicalPlan> {
         | LogicalOp::CreateVertex { .. }
         | LogicalOp::EdgeTypeScan { .. }
         | LogicalOp::EdgeTypePropertyScan { .. }
+        | LogicalOp::VarLengthExpand { .. }
         | LogicalOp::EmptyResult => {
             // These operators don't store children in LogicalOp variants in the current design,
             // but the LogicalPlan struct itself could hold them. For now, return empty.

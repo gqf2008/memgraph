@@ -184,6 +184,14 @@ impl EdgeTypeIndex {
             .collect()
     }
 
+    /// Count edges by type without collecting them (O(k) where k is count, not O(k) memory).
+    pub fn count_by_type(&self, edge_type: EdgeTypeId) -> usize {
+        let start = (edge_type, Gid::from_uint(0));
+        let next_type = EdgeTypeId::from(u32::from(edge_type) + 1);
+        let end = (next_type, Gid::from_uint(0));
+        self.index.range(start..end).count()
+    }
+
     pub fn clear(&self) {
         self.index.clear();
     }

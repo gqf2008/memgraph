@@ -1,4 +1,4 @@
-//! Reader for C++ Memgraph snapshot/WAL format (versions 14-34).
+//! Reader for C++ Memgraph snapshot/WAL format (versions 14-35).
 //!
 //! C++ format uses marker-based encoding where each value is prefixed
 //! by a single-byte `Marker` identifying the type, followed by the data.
@@ -170,9 +170,9 @@ impl<'a> CppReader<'a> {
     }
 }
 
-/// Read a C++-format snapshot (versions 14-34) and convert to Rust SnapshotData.
+/// Read a C++-format snapshot (versions 14-35) and convert to Rust SnapshotData.
 pub fn read_cpp_snapshot(data: &[u8], version: u64) -> Result<SnapshotData, CppFormatError> {
-    if !(14..=34).contains(&version) {
+    if !mgslk::is_cpp_version(version) {
         return Err(CppFormatError::UnsupportedVersion(version));
     }
 
@@ -625,10 +625,10 @@ pub fn write_cpp_wal(records: &[(u64, u8, Vec<u8>)]) -> Vec<u8> {
     buf
 }
 
-/// Read a C++-format WAL file (versions 14-34).
+/// Read a C++-format WAL file (versions 14-35).
 /// Returns a vector of (timestamp, delta_type, payload) tuples as a skeleton.
 pub fn read_cpp_wal(data: &[u8], version: u64) -> Result<Vec<(u64, u8, Vec<u8>)>, CppFormatError> {
-    if !(14..=34).contains(&version) {
+    if !mgslk::is_cpp_version(version) {
         return Err(CppFormatError::UnsupportedVersion(version));
     }
     if data.len() < 12 {

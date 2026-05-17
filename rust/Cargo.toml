@@ -62,7 +62,7 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mimalloc = "0.1"
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12", "std"] }
 tokio = { version = "1", features = ["full"] }
 libloading = "0.8"
 criterion = "0.5"

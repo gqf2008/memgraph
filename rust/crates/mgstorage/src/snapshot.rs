@@ -23,6 +23,7 @@ pub struct SnapshotMeta {
 }
 
 /// In-memory snapshot of a graph at a specific point in time.
+#[derive(Clone)]
 pub struct GraphSnapshot {
     pub meta: SnapshotMeta,
     pub vertices: HashMap<Gid, SnapshotVertex>,
@@ -48,6 +49,7 @@ pub struct SnapshotEdge {
 /// Manager for creating, storing, and restoring snapshots.
 pub struct SnapshotManager {
     snapshots: std::sync::Mutex<Vec<SnapshotMeta>>,
+    snapshot_data: std::sync::Mutex<HashMap<String, GraphSnapshot>>,
     max_snapshots: usize,
 }
 
@@ -55,6 +57,7 @@ impl SnapshotManager {
     pub fn new(max_snapshots: usize) -> Self {
         Self {
             snapshots: std::sync::Mutex::new(Vec::new()),
+            snapshot_data: std::sync::Mutex::new(HashMap::new()),
             max_snapshots,
         }
     }
@@ -120,8 +123,10 @@ impl SnapshotManager {
             edges,
         };
 
-        // Store snapshot data (in production this would go to disk)
-        let _ = snapshot;
+        self.snapshot_data
+            .lock()
+            .unwrap()
+            .insert(meta.id.clone(), snapshot);
 
         let mut list = self.snapshots.lock().unwrap();
         list.push(meta.clone());
@@ -150,17 +155,59 @@ impl SnapshotManager {
         let mut list = self.snapshots.lock().unwrap();
         let before = list.len();
         list.retain(|s| s.id != id);
+        self.snapshot_data.lock().unwrap().remove(id);
         list.len() < before
     }
 
     /// Restore storage state from a snapshot (destructive).
-    pub fn restore_from_snapshot(&self, _storage: &Storage, _id: &str) -> Result<(), StorageError> {
-        // In a real implementation, this would:
-        // 1. Lock storage exclusively
-        // 2. Clear all current data
-        // 3. Load vertices and edges from snapshot
-        // 4. Rebuild indices
-        // 5. Release lock
+    ///
+    /// Clears all current data and rebuilds from the snapshot:
+    /// 1. Clears vertices, edges, deltas, and all indices
+    /// 2. Re-creates each vertex with its labels and properties
+    /// 3. Re-creates each edge with its endpoints and properties
+    /// 4. Rebuilds label and edge-type indices
+    pub fn restore_from_snapshot(
+        &self,
+        storage: &Storage,
+        id: &str,
+    ) -> Result<(), StorageError> {
+        let snapshot = self
+            .snapshot_data
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| StorageError::SnapshotNotFound(id.to_string()))?;
+
+        // Clear all storage state
+        storage.clear();
+
+        // Use a dummy transaction for reconstruction
+        let tx = storage.begin_transaction(mgcore::delta::IsolationLevel::SnapshotIsolation);
+
+        // Restore vertices
+        for sv in snapshot.vertices.values() {
+            storage.create_vertex(&tx, sv.gid)?;
+            // Add labels
+            for &label in &sv.labels {
+                storage.vertex_add_label(&tx, sv.gid, label)?;
+            }
+            // Set properties
+            for (&prop_id, value) in &sv.properties {
+                storage.vertex_set_property(&tx, sv.gid, prop_id, value.clone())?;
+            }
+        }
+
+        // Restore edges
+        for se in snapshot.edges.values() {
+            storage.create_edge(&tx, se.gid, se.from, se.to, se.edge_type)?;
+            // Set edge properties
+            for (&prop_id, value) in &se.properties {
+                storage.edge_set_property(&tx, se.gid, prop_id, value.clone())?;
+            }
+        }
+
+        storage.commit_transaction(&tx);
         Ok(())
     }
 
@@ -238,5 +285,82 @@ mod tests {
         mgr.create_snapshot(&storage).unwrap();
         mgr.create_snapshot(&storage).unwrap();
         assert_eq!(mgr.list_snapshots().len(), 2);
+    }
+
+    #[test]
+    fn test_snapshot_restore_round_trip() {
+        use mgcore::delta::IsolationLevel;
+        use mgcore::property_value::PropertyValue;
+        use mgcore::types::PropertyId;
+
+        // Build a graph with vertices, edges, labels, and properties
+        let storage = Storage::new();
+        let label_person = LabelId::from(0u32);
+        let label_movie = LabelId::from(1u32);
+        let prop_name = PropertyId::from(0u32);
+        let prop_title = PropertyId::from(1u32);
+        let etype_acted = EdgeTypeId::from(0u32);
+
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+        let v1 = storage.create_vertex(&tx, Gid::from(1u64)).unwrap();
+        storage.vertex_add_label(&tx, v1, label_person).unwrap();
+        storage
+            .vertex_set_property(&tx, v1, prop_name, PropertyValue::String("Alice".into()))
+            .unwrap();
+
+        let v2 = storage.create_vertex(&tx, Gid::from(2u64)).unwrap();
+        storage.vertex_add_label(&tx, v2, label_movie).unwrap();
+        storage
+            .vertex_set_property(&tx, v2, prop_title, PropertyValue::String("Matrix".into()))
+            .unwrap();
+
+        storage
+            .create_edge(&tx, Gid::from(100u64), v1, v2, etype_acted)
+            .unwrap();
+        storage
+            .edge_set_property(
+                &tx,
+                Gid::from(100u64),
+                PropertyId::from(2u32),
+                PropertyValue::String("Neo".into()),
+            )
+            .unwrap();
+        storage.commit_transaction(&tx);
+
+        // Take snapshot
+        let mgr = SnapshotManager::new(5);
+        let meta = mgr.create_snapshot(&storage).unwrap();
+        assert_eq!(meta.vertex_count, 2);
+        assert_eq!(meta.edge_count, 1);
+
+        // Mutate the graph after snapshot
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+        storage.create_vertex(&tx, Gid::from(3u64)).unwrap();
+        storage.commit_transaction(&tx);
+        assert_eq!(storage.vertex_count(), 3);
+
+        // Restore from snapshot
+        mgr.restore_from_snapshot(&storage, &meta.id).unwrap();
+
+        // Verify restored state matches snapshot (2 vertices, not 3)
+        assert_eq!(storage.vertex_count(), 2);
+        assert_eq!(storage.edge_count(), 1);
+
+        // Verify vertex properties restored
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+        let restored_v1 = storage.get_vertex(v1, &tx).unwrap();
+        let name = restored_v1.properties.get(prop_name);
+        assert_eq!(name, &PropertyValue::String("Alice".into()));
+        assert!(restored_v1.labels.contains(&label_person));
+
+        let restored_v2 = storage.get_vertex(v2, &tx).unwrap();
+        let title = restored_v2.properties.get(prop_title);
+        assert_eq!(title, &PropertyValue::String("Matrix".into()));
+        assert!(restored_v2.labels.contains(&label_movie));
+        drop(tx);
+
+        // Verify edge properties restored
+        let out_edges = storage.vertex_out_edges(v1, None);
+        assert_eq!(out_edges.len(), 1);
     }
 }

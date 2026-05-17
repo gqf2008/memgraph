@@ -1,7 +1,7 @@
 //! Format version detection and dispatch.
 //!
 //! Determines whether a durability file is in the current Rust SLK format
-//! or an older C++ format (v14-v34) and selects the appropriate reader.
+//! or an older C++ format (v14-v35) and selects the appropriate reader.
 
 use mgslk::{DURABILITY_VERSION, SNAPSHOT_MAGIC, WAL_MAGIC};
 
@@ -10,7 +10,7 @@ use mgslk::{DURABILITY_VERSION, SNAPSHOT_MAGIC, WAL_MAGIC};
 pub enum FormatKind {
     /// Current Rust SLK format (version >= 100).
     Current,
-    /// Legacy C++ format (versions 14-34).
+    /// Legacy C++ format (versions 14-35).
     LegacyCpp(u64),
     /// Unrecognized / unsupported.
     Unknown(u64),

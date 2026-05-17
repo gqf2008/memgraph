@@ -6,6 +6,7 @@
 pub mod checkpoint;
 pub mod cpp_format;
 pub mod delta_record;
+pub mod durability_manager;
 pub mod incremental;
 pub mod legacy;
 pub mod migration;
@@ -16,6 +17,9 @@ pub mod wal;
 
 pub use checkpoint::{CheckpointManager, CheckpointMeta};
 pub use delta_record::DeltaRecord;
+pub use durability_manager::{
+    cleanup_old_wals, list_wal_files, DurabilityConfig, DurabilityManager,
+};
 pub use incremental::{
     IncrementalSnapshotData, IncrementalSnapshotHeader, IncrementalSnapshotReader,
     IncrementalSnapshotWriter,

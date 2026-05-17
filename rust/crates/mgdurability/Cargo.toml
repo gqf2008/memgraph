@@ -15,3 +15,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
+
+[[test]]
+name = "durability_migration"
+harness = true

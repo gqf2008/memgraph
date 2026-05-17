@@ -172,7 +172,7 @@ impl SnapshotReader {
             data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
         ]);
 
-        // Detect C++-format snapshots (versions 14-34) and convert
+        // Detect C++-format snapshots (versions 14-35) and convert
         if mgslk::is_cpp_version(version) {
             return crate::legacy::LegacySnapshotReader::read(&data, version)
                 .map_err(|e| SnapshotError::Corrupt(format!("C++ snapshot parse error: {}", e)));

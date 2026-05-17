@@ -151,6 +151,7 @@ pub struct ServerContext {
     pub coordinator: Arc<std::sync::Mutex<Option<mgcoord::Coordinator>>>,
     pub cluster_manager: Arc<tokio::sync::RwLock<Option<mgcoord::ClusterManager>>>,
     pub cluster_state: std::sync::RwLock<Arc<mgcoord::ClusterState>>,
+    pub durability_manager: std::sync::RwLock<Option<Arc<mgdurability::DurabilityManager>>>,
 }
 
 impl ServerContext {
@@ -200,6 +201,7 @@ impl ServerContext {
             cluster_state: std::sync::RwLock::new(Arc::new(mgcoord::ClusterState::new(
                 String::new(),
             ))),
+            durability_manager: std::sync::RwLock::new(None),
         }
     }
 
@@ -274,27 +276,63 @@ pub fn initialize(ctx: &ServerContext, config: &StartupConfig) -> Result<(), Str
 
     ctx.set_phase(LifecyclePhase::ConfigLoaded);
 
-    // Initialize auth if credentials provided
+    // Load persisted auth state (users, roles, privileges)
+    let auth_path = ctx.data_directory.join("auth.json");
+    if auth_path.exists() {
+        match ctx.auth.load_into_from_file(&auth_path) {
+            Ok(()) => info!("Auth state loaded from {}", auth_path.display()),
+            Err(e) => warn!("Failed to load auth state: {}", e),
+        }
+    }
+
+    // Initialize auth if credentials provided (overrides/adds to persisted state)
     if let Some((user, pass)) = config.auth_credentials.as_ref() {
         ctx.auth.set_enabled(true);
-        ctx.auth
-            .add_user(user, &mgauth::hash_password(pass), mgauth::Role::Admin);
+        if ctx.auth.authenticate(user, pass).is_err() {
+            ctx.auth
+                .add_user(user, &mgauth::hash_password(pass), mgauth::Role::Admin);
+        }
         info!("Authentication enabled for user: {}", user);
     }
 
     // Load persistence (snapshot + WAL replay)
-    let wal_path = ctx.data_directory.join("wal.mgwal");
-    let snap_path = ctx.data_directory.join("snapshot.mgsnap");
+    // Try latest snapshot from snapshots/ directory first, fall back to legacy snapshot.mgsnap
+    let snapshots_dir = ctx.data_directory.join("snapshots");
+    let legacy_snap = ctx.data_directory.join("snapshot.mgsnap");
+    let snap_path = if snapshots_dir.exists() {
+        // Find the latest .snap file by checking CheckpointManager
+        match mgdurability::CheckpointManager::new(&snapshots_dir, 10) {
+            Ok(ckpt_mgr) => {
+                if let Some(latest_seq) = ckpt_mgr.latest_full_snapshot() {
+                    snapshots_dir.join(format!("{}.snap", latest_seq))
+                } else {
+                    legacy_snap.clone()
+                }
+            }
+            Err(_) => legacy_snap.clone(),
+        }
+    } else {
+        legacy_snap.clone()
+    };
+
+    // Collect all WAL files (rotated + current) in sorted order
+    let wal_files = mgdurability::list_wal_files(&ctx.data_directory);
+    let wal_strs: Vec<String> = wal_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let wal_refs: Vec<&str> = wal_strs.iter().map(|s| s.as_str()).collect();
+
     match recover(
         &ctx.storage,
         Some(&ctx.catalog),
         snap_path.to_str().unwrap_or("snapshot.mgsnap"),
-        &[wal_path.to_str().unwrap_or("wal.mgwal")],
+        &wal_refs,
     ) {
         Ok(()) => info!(
-            "Recovery complete from {} + {}",
+            "Recovery complete from {} (+ {} WAL files)",
             snap_path.display(),
-            wal_path.display()
+            wal_refs.len()
         ),
         Err(e) => warn!("No persistence found. Starting with empty database. ({e})"),
     }
@@ -319,6 +357,34 @@ pub fn initialize(ctx: &ServerContext, config: &StartupConfig) -> Result<(), Str
             }
         }
         Err(e) => warn!("Plugin scan failed: {}", e),
+    }
+
+    // Load MAGE query modules via dlopen
+    let modules_dir = config.query_modules_dir.as_ref().cloned()
+        .unwrap_or_else(|| ctx.data_directory.join("query_modules"));
+    let results = mgprocedure::module_loader::scan_and_load_directory(
+        &modules_dir.to_string_lossy()
+    );
+    let mut loaded_count = 0;
+    for result in &results {
+        match result {
+            Ok(name) => { info!("Loaded MAGE module: {}", name); loaded_count += 1; }
+            Err(e) => warn!("Failed to load MAGE module: {}", e),
+        }
+    }
+    if loaded_count > 0 {
+        info!("Loaded {} MAGE module(s)", loaded_count);
+        // Register loaded module procedures in mginterp's global registry
+        for module_name in mgprocedure::module_loader::loaded_module_names() {
+            let proc_name = format!("{}.call", module_name);
+            let display_name = module_name.clone();
+            mginterp::register_global_procedure(proc_name, move |_storage, _args| {
+                Err(mginterp::ExecError::Runtime(format!(
+                    "MAGE module '{}' is loaded but the C API execution bridge is pending",
+                    display_name
+                )))
+            });
+        }
     }
 
     ctx.set_phase(LifecyclePhase::PluginsLoading);
@@ -365,13 +431,25 @@ pub fn start_background_tasks(ctx: Arc<ServerContext>, gc_interval_secs: u64) {
                 // Memory pressure check
                 if gc_ctx.memory_tracker.should_check() {
                     match gc_ctx.memory_tracker.pressure_level() {
-                        mgsystem::MemoryPressure::Normal => {}
+                        mgsystem::MemoryPressure::Normal => {
+                            gc_ctx.admin.set_memory_critical(false);
+                        }
                         mgsystem::MemoryPressure::Warning => {
                             warn!("Memory pressure: WARNING");
+                            let _ = gc_ctx.storage.gc();
+                            gc_ctx.admin.set_memory_critical(false);
                         }
                         mgsystem::MemoryPressure::Critical => {
                             error!("Memory pressure: CRITICAL — triggering emergency GC");
                             let _ = gc_ctx.storage.gc();
+                            gc_ctx.admin.set_memory_critical(true);
+                            // Kill the longest-running query to free memory
+                            if let Some(qid) = gc_ctx.admin.kill_longest_running_query() {
+                                error!(
+                                    "Memory pressure critical: killed query {} to free memory",
+                                    qid
+                                );
+                            }
                         }
                     }
                 }
@@ -454,6 +532,12 @@ pub fn shutdown(ctx: &ServerContext) {
         info!("Coordinator shutting down");
     }
 
+    // Step 5b: Stop durability manager (takes final snapshot)
+    if let Some(ref dm) = *ctx.durability_manager.read().unwrap() {
+        info!("Durability manager stopping (final snapshot in progress)...");
+        dm.stop();
+    }
+
     // Step 6: Persist state
     ctx.set_phase(LifecyclePhase::Persisting);
     persist_state(ctx);
@@ -463,7 +547,39 @@ pub fn shutdown(ctx: &ServerContext) {
 }
 
 /// Save snapshot and reset WAL.
+/// In daemon shutdown, the durability manager's `stop()` handles the final
+/// snapshot before this is called, so we just sync WAL and return.
+/// In `--query` mode, we force a snapshot through the DM so data is persisted.
 pub fn persist_state(ctx: &ServerContext) {
+    // Save auth state
+    let auth_path = ctx.data_directory.join("auth.json");
+    if let Err(e) = ctx.auth.save_to_file(&auth_path) {
+        warn!("Failed to save auth state: {}", e);
+    }
+
+    let dm_guard = ctx.durability_manager.read().unwrap();
+    if let Some(ref dm) = *dm_guard {
+        // Only force snapshot if none were taken yet (handles --query mode
+        // where the process exits before the background thread fires).
+        // In daemon shutdown, stop() already took the final snapshot.
+        if dm.snapshot_count() == 0 {
+            match dm.force_snapshot() {
+                Ok(path) => {
+                    ctx.storage.sync_wal();
+                    info!("Snapshot saved to {}", path.display());
+                    return;
+                }
+                Err(e) => warn!("Failed to force snapshot via durability manager: {}", e),
+            }
+        } else {
+            ctx.storage.sync_wal();
+            info!("Final snapshot handled by durability manager ({} total)", dm.snapshot_count());
+            return;
+        }
+    }
+    drop(dm_guard);
+
+    // Fallback: manual snapshot + WAL reset
     fs::create_dir_all(&ctx.data_directory).ok();
 
     let snap_path = ctx.data_directory.join("snapshot.mgsnap");
@@ -559,6 +675,7 @@ pub struct StartupConfig {
     pub cache_size: usize,
     pub cache_ttl_secs: Option<u64>,
     pub cache_policy: EvictionPolicy,
+    pub query_modules_dir: Option<PathBuf>,
 }
 
 impl StartupConfig {
@@ -606,6 +723,7 @@ impl StartupConfig {
             cache_size,
             cache_ttl_secs,
             cache_policy: EvictionPolicy::Lru,
+            query_modules_dir: args.query_modules_dir.clone(),
         }
     }
 }

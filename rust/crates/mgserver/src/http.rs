@@ -122,6 +122,17 @@ where
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
+    // Rate limiting: check client IP against rate limiter
+    let client_ip = req
+        .headers()
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    if !state.admin.check_rate_limit(&client_ip) {
+        return Ok(rate_limited_response());
+    }
+
     let result = match (method, path.as_str()) {
         (Method::GET, "/health") => handle_health(&state).await,
         (Method::GET, "/metrics") => handle_metrics(&state).await,
@@ -1323,6 +1334,16 @@ fn error_response(status: StatusCode, msg: &str) -> Response<Body> {
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
+        .body(Full::new(body))
+        .unwrap()
+}
+
+fn rate_limited_response() -> Response<Body> {
+    let body = Bytes::from(r#"{"error":"rate limit exceeded","retry_after_ms":1000}"#);
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("content-type", "application/json")
+        .header("retry-after", "1")
         .body(Full::new(body))
         .unwrap()
 }

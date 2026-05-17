@@ -136,6 +136,29 @@ static GLOBAL_QUERY_CACHE: LazyLock<QueryCache> = LazyLock::new(|| QueryCache::n
 /// Global query plan cache shared across all threads.
 static GLOBAL_PLAN_CACHE: LazyLock<QueryPlanCache> = LazyLock::new(|| QueryPlanCache::new(1000));
 
+/// Global procedure registry for MAGE modules (populated at server startup).
+static GLOBAL_PROCEDURE_REGISTRY: LazyLock<std::sync::Mutex<ProcedureRegistry>> =
+    LazyLock::new(|| std::sync::Mutex::new(ProcedureRegistry::new()));
+
+/// Atomic flag indicating whether any MAGE modules have been registered.
+/// Allows the hot-path `exec_call` to skip the mutex when no modules exist.
+static MAGE_MODULES_LOADED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Register a MAGE module procedure in the global registry.
+pub fn register_global_procedure(
+    name: impl Into<String>,
+    f: impl Fn(&Storage, &[PropertyValue]) -> Result<QueryResult, ExecError> + Send + Sync + 'static,
+) {
+    GLOBAL_PROCEDURE_REGISTRY.lock().unwrap().register(name, f);
+    MAGE_MODULES_LOADED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Get the global procedure registry names (for show.procedures).
+pub fn global_procedure_names() -> Vec<String> {
+    GLOBAL_PROCEDURE_REGISTRY.lock().unwrap().procedures.keys().cloned().collect()
+}
+
 /// Guard that clears the query deadline on drop.
 pub struct QueryDeadlineGuard;
 
@@ -715,14 +738,6 @@ fn try_physical_execution(
                 if pattern.elements.iter().any(|e| e.path_alias.is_some()) {
                     return None;
                 }
-                // Reject variable-length edges — physical executor only handles single-hop
-                if pattern.elements.iter().any(|e| {
-                    e.edges.iter().any(|(edge_pat, _)| {
-                        edge_pat.var_length.is_some()
-                    })
-                }) {
-                    return None;
-                }
                 // Reject anonymous edges with properties — no alias to reference in Filter
                 if pattern.elements.iter().any(|e| {
                     e.edges.iter().any(|(edge_pat, _)| {
@@ -859,6 +874,7 @@ fn logical_plan_is_executable(plan: &mgplanner::LogicalPlan) -> bool {
         | LogicalOp::EdgeTypeScan { .. }
         | LogicalOp::EdgeTypePropertyScan { .. }
         | LogicalOp::EdgeExpand { .. }
+        | LogicalOp::VarLengthExpand { .. }
         | LogicalOp::Filter { .. }
         | LogicalOp::Project { .. }
         | LogicalOp::Produce { .. }
@@ -2107,7 +2123,7 @@ fn matches_direction(current: Gid, from: Gid, to: Gid, dir: Direction) -> bool {
 
 /// Variable-length path traversal (DFS by default, BFS when requested).
 /// Returns list of (bindings, final_vertex_gid, path).
-fn traverse_variable_length(
+pub(crate) fn traverse_variable_length(
     storage: &Storage,
     tx: &mgstorage::transaction::Transaction,
     start_gid: Gid,
@@ -3499,6 +3515,14 @@ fn exec_call(
         }
     }
 
+    // Check global procedure registry (MAGE modules) — skip lock when empty
+    if MAGE_MODULES_LOADED.load(std::sync::atomic::Ordering::Relaxed) {
+        let global_reg = GLOBAL_PROCEDURE_REGISTRY.lock().unwrap();
+        if let Some(proc) = global_reg.get(&name_lower) {
+            return proc(storage, &args);
+        }
+    }
+
     // Legacy hardcoded procedures (kept for compatibility)
     match name_lower.as_str() {
         "show.procedures" | "show procedures" | "dbms.procedures" => {
@@ -3516,6 +3540,15 @@ fn exec_call(
             }
             let builtin_reg = builtin_procs::ProcedureRegistry::new();
             for name in builtin_reg.list() {
+                if seen.insert(name.clone()) {
+                    let mut r = HashMap::new();
+                    r.insert("name".to_string(), PropertyValue::String(name.clone()));
+                    r.insert("signature".to_string(), PropertyValue::String(format!("{}() :: (result :: ANY)", name)));
+                    rows.push(r);
+                }
+            }
+            // Global procedure registry (MAGE modules)
+            for name in global_procedure_names() {
                 if seen.insert(name.clone()) {
                     let mut r = HashMap::new();
                     r.insert("name".to_string(), PropertyValue::String(name.clone()));

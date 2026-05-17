@@ -16,3 +16,4 @@ crossbeam-skiplist = { workspace = true }
 tantivy = { workspace = true }
 lru = "0.12"
 num_cpus = "1.16"
+rstar = "0.12"

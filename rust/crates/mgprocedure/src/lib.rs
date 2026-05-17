@@ -476,9 +476,62 @@ opaque! {
     mgp_list_iterator,
     mgp_map_iterator,
     mgp_func_context,
-    mgp_message,
-    mgp_messages,
     mgp_vector_search_result,
+}
+
+// ─── Stream message types (backed, not opaque) ─────────────────────────────
+
+/// Internal representation of a stream message (Kafka, Pulsar, etc.).
+#[repr(C)]
+pub struct mgp_message {
+    payload: Vec<u8>,
+    payload_ptr: *const u8,
+    key: Vec<u8>,
+    key_ptr: *const u8,
+    topic: CString,
+    topic_ptr: *const c_char,
+    source_type: mgp_source_type,
+    timestamp: i64,
+    offset: i64,
+}
+
+impl mgp_message {
+    fn new(
+        payload: Vec<u8>,
+        key: Vec<u8>,
+        topic: &str,
+        source_type: mgp_source_type,
+        timestamp: i64,
+        offset: i64,
+    ) -> Self {
+        let topic_c = CString::new(topic).unwrap_or_else(|_| CString::new("unknown").unwrap());
+        let payload_ptr = payload.as_ptr();
+        let key_ptr = key.as_ptr();
+        let topic_ptr = topic_c.as_ptr();
+        Self {
+            payload,
+            payload_ptr,
+            key,
+            key_ptr,
+            topic: topic_c,
+            topic_ptr,
+            source_type,
+            timestamp,
+            offset,
+        }
+    }
+}
+
+/// A list of stream messages.
+#[repr(C)]
+pub struct mgp_messages {
+    messages: Vec<mgp_message>,
+}
+
+impl mgp_messages {
+    fn new(messages: Vec<mgp_message>) -> Self {
+        Self { messages }
+    }
 }
 
 #[repr(C)]
@@ -6181,7 +6234,7 @@ pub unsafe extern "C" fn mgp_execution_headers_at(
     }
 }
 
-// ─── Stream message API stubs ──────────────────────────────────────────────
+// ─── Stream message API ───────────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -6192,123 +6245,128 @@ pub enum mgp_source_type {
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_source_type(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut mgp_source_type,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = mgp_source_type::Kafka;
+    *result = (*message).source_type;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_payload(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut *const c_char,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = ptr::null();
+    *result = (*message).payload_ptr as *const c_char;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_payload_size(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut usize,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = 0;
+    *result = (*message).payload.len();
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_topic_name(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut *const c_char,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = ptr::null();
+    *result = (*message).topic_ptr;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_key(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut *const c_char,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = ptr::null();
+    *result = (*message).key_ptr as *const c_char;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_key_size(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut usize,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = 0;
+    *result = (*message).key.len();
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_timestamp(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut i64,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = 0;
+    *result = (*message).timestamp;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_message_offset(
-    _message: *mut mgp_message,
+    message: *mut mgp_message,
     result: *mut i64,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || message.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = 0;
+    *result = (*message).offset;
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_messages_size(
-    _messages: *mut mgp_messages,
+    messages: *mut mgp_messages,
     result: *mut usize,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || messages.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = 0;
+    *result = (*messages).messages.len();
     MgpError::NoError
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn mgp_messages_at(
-    _messages: *mut mgp_messages,
-    _index: usize,
+    messages: *mut mgp_messages,
+    index: usize,
     result: *mut *mut mgp_message,
 ) -> MgpError {
-    if result.is_null() {
+    if result.is_null() || messages.is_null() {
         return MgpError::InvalidArgument;
     }
-    *result = ptr::null_mut();
-    MgpError::OutOfRange
+    let msgs = &mut (*messages).messages;
+    if index >= msgs.len() {
+        *result = ptr::null_mut();
+        return MgpError::OutOfRange;
+    }
+    *result = ptr::addr_of_mut!(msgs[index]);
+    MgpError::NoError
 }
 
 // ─── Misc stubs ────────────────────────────────────────────────────────────

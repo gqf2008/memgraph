@@ -508,6 +508,10 @@ impl WalAppender for ReplicatingWalWriter {
     fn sync(&mut self) -> Result<(), std::io::Error> {
         self.inner.sync()
     }
+
+    fn reset(&mut self) -> Result<(), std::io::Error> {
+        self.inner.reset()
+    }
 }
 
 #[cfg(test)]

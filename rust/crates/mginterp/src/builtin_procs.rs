@@ -233,6 +233,40 @@ impl ProcedureRegistry {
             "db.degree_histogram".to_string(),
             db_degree_histogram as BuiltInProc,
         );
+        procs.insert("algo.mst".to_string(), algo_mst as BuiltInProc);
+        procs.insert("algo.prim".to_string(), algo_prim as BuiltInProc);
+        procs.insert(
+            "algo.random_walk".to_string(),
+            algo_random_walk as BuiltInProc,
+        );
+        procs.insert(
+            "algo.random_walk_with_restart".to_string(),
+            algo_random_walk_with_restart as BuiltInProc,
+        );
+        procs.insert(
+            "algo.jaccard_similarity".to_string(),
+            algo_jaccard_similarity as BuiltInProc,
+        );
+        procs.insert(
+            "algo.cosine_similarity".to_string(),
+            algo_cosine_similarity as BuiltInProc,
+        );
+        procs.insert(
+            "algo.adamic_adar".to_string(),
+            algo_adamic_adar as BuiltInProc,
+        );
+        procs.insert(
+            "algo.common_neighbors".to_string(),
+            algo_common_neighbors as BuiltInProc,
+        );
+        procs.insert(
+            "algo.resource_allocation".to_string(),
+            algo_resource_allocation as BuiltInProc,
+        );
+        procs.insert(
+            "algo.preferential_attachment".to_string(),
+            algo_preferential_attachment as BuiltInProc,
+        );
         Self { procs }
     }
 
@@ -1910,6 +1944,202 @@ fn db_analytics(
         PropertyValue::Double(degree_corr),
     );
     Ok(vec![row])
+}
+
+fn algo_mst(
+    storage: &Storage,
+    _args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let edges = mgquery::mst::extract_edges(storage);
+    let (mst, total) = mgquery::mst::kruskal(edges);
+    let mut rows: Vec<HashMap<String, PropertyValue>> = mst
+        .into_iter()
+        .map(|e| {
+            let mut row = HashMap::new();
+            row.insert("source".to_string(), PropertyValue::Int(e.from.as_int()));
+            row.insert("target".to_string(), PropertyValue::Int(e.to.as_int()));
+            row.insert("weight".to_string(), PropertyValue::Double(e.weight));
+            row
+        })
+        .collect();
+    let mut summary = HashMap::new();
+    summary.insert(
+        "totalWeight".to_string(),
+        PropertyValue::Double(total),
+    );
+    rows.push(summary);
+    Ok(rows)
+}
+
+fn algo_prim(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let start = match args.get("startNode") {
+        Some(PropertyValue::Int(n)) => Gid::from_uint(*n as u64),
+        _ => {
+            return Err("algo.prim requires a 'startNode' integer argument".into());
+        }
+    };
+    let (mst, total) = mgquery::mst::prim(storage, start);
+    let mut rows: Vec<HashMap<String, PropertyValue>> = mst
+        .into_iter()
+        .map(|e| {
+            let mut row = HashMap::new();
+            row.insert("source".to_string(), PropertyValue::Int(e.from.as_int()));
+            row.insert("target".to_string(), PropertyValue::Int(e.to.as_int()));
+            row.insert("weight".to_string(), PropertyValue::Double(e.weight));
+            row
+        })
+        .collect();
+    let mut summary = HashMap::new();
+    summary.insert(
+        "totalWeight".to_string(),
+        PropertyValue::Double(total),
+    );
+    rows.push(summary);
+    Ok(rows)
+}
+
+fn algo_random_walk(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let start = match args.get("startNode") {
+        Some(PropertyValue::Int(n)) => Gid::from_uint(*n as u64),
+        _ => {
+            return Err("algo.random_walk requires a 'startNode' integer argument".into());
+        }
+    };
+    let steps = match args.get("steps") {
+        Some(PropertyValue::Int(n)) => *n as usize,
+        _ => 10,
+    };
+    let walk = mgquery::random_walk::random_walk(storage, start, steps);
+    Ok(walk
+        .into_iter()
+        .map(|gid| {
+            let mut row = HashMap::new();
+            row.insert("node".to_string(), PropertyValue::Int(gid.as_int()));
+            row
+        })
+        .collect())
+}
+
+fn algo_random_walk_with_restart(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let start = match args.get("startNode") {
+        Some(PropertyValue::Int(n)) => Gid::from_uint(*n as u64),
+        _ => {
+            return Err(
+                "algo.random_walk_with_restart requires a 'startNode' integer argument".into(),
+            );
+        }
+    };
+    let steps = match args.get("steps") {
+        Some(PropertyValue::Int(n)) => *n as usize,
+        _ => 10,
+    };
+    let restart = match args.get("restartProbability") {
+        Some(PropertyValue::Double(n)) => *n,
+        Some(PropertyValue::Int(n)) => *n as f64,
+        _ => 0.15,
+    };
+    let walk =
+        mgquery::random_walk::random_walk_with_restart(storage, start, steps, restart);
+    Ok(walk
+        .into_iter()
+        .map(|gid| {
+            let mut row = HashMap::new();
+            row.insert("node".to_string(), PropertyValue::Int(gid.as_int()));
+            row
+        })
+        .collect())
+}
+
+fn algo_jaccard_similarity(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let score = mgquery::similarity_advanced::jaccard_similarity(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("score".to_string(), PropertyValue::Double(score));
+    Ok(vec![row])
+}
+
+fn algo_cosine_similarity(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let score = mgquery::similarity_advanced::cosine_similarity(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("score".to_string(), PropertyValue::Double(score));
+    Ok(vec![row])
+}
+
+fn algo_adamic_adar(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let score = mgquery::similarity_advanced::adamic_adar(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("score".to_string(), PropertyValue::Double(score));
+    Ok(vec![row])
+}
+
+fn algo_common_neighbors(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let count = mgquery::similarity_advanced::common_neighbors(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("count".to_string(), PropertyValue::Int(count as i64));
+    Ok(vec![row])
+}
+
+fn algo_resource_allocation(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let score = mgquery::similarity_advanced::resource_allocation(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("score".to_string(), PropertyValue::Double(score));
+    Ok(vec![row])
+}
+
+fn algo_preferential_attachment(
+    storage: &Storage,
+    args: &HashMap<String, PropertyValue>,
+) -> Result<Vec<HashMap<String, PropertyValue>>, String> {
+    let (a, b) = parse_pair_nodes(args, "nodeA", "nodeB")?;
+    let score = mgquery::similarity_advanced::preferential_attachment(storage, a, b);
+    let mut row = HashMap::new();
+    row.insert("score".to_string(), PropertyValue::Int(score as i64));
+    Ok(vec![row])
+}
+
+/// Helper: parse a pair of integer node arguments.
+fn parse_pair_nodes(
+    args: &HashMap<String, PropertyValue>,
+    key_a: &str,
+    key_b: &str,
+) -> Result<(Gid, Gid), String> {
+    let a = match args.get(key_a) {
+        Some(PropertyValue::Int(n)) => Gid::from_uint(*n as u64),
+        _ => return Err(format!("requires a '{}' integer argument", key_a)),
+    };
+    let b = match args.get(key_b) {
+        Some(PropertyValue::Int(n)) => Gid::from_uint(*n as u64),
+        _ => return Err(format!("requires a '{}' integer argument", key_b)),
+    };
+    Ok((a, b))
 }
 
 fn db_degree_histogram(

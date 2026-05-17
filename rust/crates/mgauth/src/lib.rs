@@ -5,13 +5,19 @@
 //! LDAP authentication, and fine-grained label-level permissions.
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
 use std::sync::RwLock;
 
+use serde::{Deserialize, Serialize};
+
 /// Auth error codes matching C++ semantics.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthError {
     InvalidCredentials,
     UserNotFound,
+    UserExists(String),
     RoleExists(String),
     RoleNotFound(String),
     PermissionDenied,
@@ -27,6 +33,7 @@ impl std::fmt::Display for AuthError {
         match self {
             AuthError::InvalidCredentials => write!(f, "invalid credentials"),
             AuthError::UserNotFound => write!(f, "user not found"),
+            AuthError::UserExists(name) => write!(f, "user '{}' already exists", name),
             AuthError::RoleExists(name) => write!(f, "role '{}' already exists", name),
             AuthError::RoleNotFound(name) => write!(f, "role '{}' not found", name),
             AuthError::PermissionDenied => write!(f, "permission denied"),
@@ -43,7 +50,7 @@ impl std::fmt::Display for AuthError {
 
 // ─── Roles ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Role {
     Admin,
     ReadWrite,
@@ -85,7 +92,7 @@ impl Role {
 
 // ─── Label-level permissions ────────────────────────────────────────────
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LabelPermissions {
     /// Labels this user can read. Empty = all.
     pub read_labels: HashSet<String>,
@@ -113,7 +120,7 @@ impl LabelPermissions {
 
 // ─── User ───────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
     pub password_hash: String,
@@ -143,7 +150,7 @@ impl User {
 
 // ─── Account lockout configuration ──────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LockoutConfig {
     pub max_attempts: u32,
     pub lockout_duration_secs: u64,
@@ -162,7 +169,7 @@ impl Default for LockoutConfig {
 
 // ─── Password policy ────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PasswordPolicy {
     pub min_length: usize,
     pub require_uppercase: bool,
@@ -225,6 +232,30 @@ pub struct AuditEvent {
     pub details: Option<String>,
 }
 
+// ─── LDAP configuration ──────────────────────────────────────────────────
+
+/// LDAP connection and search configuration.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LdapConfig {
+    pub url: String,
+    pub base_dn: String,
+    pub user_filter: String,
+    pub bind_dn: String,
+    pub bind_password: String,
+}
+
+impl Default for LdapConfig {
+    fn default() -> Self {
+        Self {
+            url: "ldap://localhost:389".into(),
+            base_dn: String::new(),
+            user_filter: "(uid=%u)".into(),
+            bind_dn: String::new(),
+            bind_password: String::new(),
+        }
+    }
+}
+
 // ─── Auth Store ─────────────────────────────────────────────────────────
 
 pub struct AuthStore {
@@ -235,12 +266,22 @@ pub struct AuthStore {
     /// Role → set of denied privilege names.
     role_denied_privileges: RwLock<HashMap<String, HashSet<String>>>,
     auth_enabled: RwLock<bool>,
-    ldap_url: RwLock<Option<String>>,
+    ldap_config: RwLock<Option<LdapConfig>>,
     failed_attempts: RwLock<HashMap<String, (u32, u64)>>, // (count, first_attempt_ts)
     lockout_config: RwLock<LockoutConfig>,
     password_policy: RwLock<PasswordPolicy>,
     audit_log: RwLock<Vec<AuditEvent>>,
     max_audit_entries: usize,
+}
+
+impl std::fmt::Debug for AuthStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthStore")
+            .field("auth_enabled", &*self.auth_enabled.read().unwrap())
+            .field("users_count", &self.users.read().unwrap().len())
+            .field("roles_count", &self.roles.read().unwrap().len())
+            .finish()
+    }
 }
 
 impl Default for AuthStore {
@@ -257,7 +298,7 @@ impl AuthStore {
             role_privileges: RwLock::new(HashMap::new()),
             role_denied_privileges: RwLock::new(HashMap::new()),
             auth_enabled: RwLock::new(false),
-            ldap_url: RwLock::new(None),
+            ldap_config: RwLock::new(None),
             failed_attempts: RwLock::new(HashMap::new()),
             lockout_config: RwLock::new(LockoutConfig::default()),
             password_policy: RwLock::new(PasswordPolicy::default()),
@@ -338,8 +379,25 @@ impl AuthStore {
         }
     }
 
-    fn clear_failed_attempts(&self, username: &str) {
+    pub fn clear_failed_attempts(&self, username: &str) {
         self.failed_attempts.write().unwrap().remove(username);
+    }
+
+    /// Lock an account by setting failed attempts to max_attempts.
+    /// No fake audit entries are created (unlike the loop-based approach).
+    pub fn lock_account(&self, username: &str) -> Result<(), AuthError> {
+        let config = self.lockout_config.read().unwrap();
+        self.failed_attempts
+            .write()
+            .unwrap()
+            .insert(username.to_string(), (config.max_attempts, Self::now_secs()));
+        self.record_audit(username, AuditEventType::AccountLocked, None);
+        Ok(())
+    }
+
+    /// List only usernames (avoids cloning full User structs).
+    pub fn list_usernames(&self) -> Vec<String> {
+        self.users.read().unwrap().keys().cloned().collect()
     }
 
     /// Add a user with bcrypt-style hashed password.
@@ -359,6 +417,9 @@ impl AuthStore {
         password: &str,
         role: Role,
     ) -> Result<(), AuthError> {
+        if self.users.read().unwrap().contains_key(username) {
+            return Err(AuthError::UserExists(username.to_string()));
+        }
         let policy = self.password_policy.read().unwrap();
         if let Err(reason) = policy.check(password) {
             return Err(AuthError::PasswordTooWeak(reason));
@@ -487,20 +548,42 @@ impl AuthStore {
         Ok(())
     }
 
-    /// Configure LDAP authentication.
-    pub fn set_ldap(&self, url: &str) {
-        *self.ldap_url.write().unwrap() = Some(url.to_string());
+    /// Configure LDAP with a full LdapConfig.
+    pub fn set_ldap_config(&self, config: LdapConfig) {
+        *self.ldap_config.write().unwrap() = Some(config);
     }
 
-    /// Authenticate via LDAP.
-    pub fn authenticate_ldap(&self, username: &str, password: &str) -> Result<User, AuthError> {
-        let ldap_url = self.ldap_url.read().unwrap();
-        let _url = ldap_url.as_ref().ok_or(AuthError::NotConfigured)?;
+    /// Configure LDAP with just a URL (backward-compatible, uses defaults for other fields).
+    pub fn set_ldap(&self, url: &str) {
+        let config = LdapConfig {
+            url: url.to_string(),
+            ..LdapConfig::default()
+        };
+        *self.ldap_config.write().unwrap() = Some(config);
+    }
 
-        // LDAP bind would go here — for now, delegate to local store
-        drop(ldap_url);
-        self.authenticate(username, password)
-            .map_err(|_| AuthError::LdapError("LDAP bind failed".into()))
+    /// Authenticate via LDAP: binds to the LDAP server, searches for the user,
+    /// and attempts a simple bind with the user's DN + password.
+    pub fn authenticate_ldap(&self, username: &str, password: &str) -> Result<User, AuthError> {
+        let guard = self.ldap_config.read().unwrap();
+        let config = guard.as_ref().ok_or(AuthError::NotConfigured)?;
+
+        match ldap_bind_and_search(config, username, password) {
+            Ok(_) => {
+                let mut users = self.users.write().unwrap();
+                if !users.contains_key(username) {
+                    let user = User::new(username, "", Role::ReadWrite);
+                    users.insert(username.to_string(), user);
+                }
+                users.get(username).cloned().ok_or(AuthError::UserNotFound)
+            }
+            Err(AuthError::LdapError(_)) => {
+                // LDAP failed — fall back to local authentication
+                self.authenticate(username, password)
+                    .map_err(|_| AuthError::LdapError("LDAP bind failed and local auth also failed".into()))
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// List all users.
@@ -728,7 +811,63 @@ impl AuthStore {
             .ok_or_else(|| format!("user '{}' not found", old_name))?;
         user.username = new_name.to_string();
         users.insert(new_name.to_string(), user);
+        self.record_audit(
+            old_name,
+            AuditEventType::UserCreated,
+            Some(format!("renamed from {}", old_name)),
+        );
         Ok(())
+    }
+
+    /// Save auth state to disk as JSON. Does NOT persist the audit log
+    /// or transient failed-attempt counters.
+    pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let state = SerializableAuthState::from_auth_store(self)
+            .map_err(|e| format!("failed to lock: {}", e))?;
+        let json = serde_json::to_string_pretty(&state)
+            .map_err(|e| format!("serialization error: {}", e))?;
+        let tmp_path = path.as_ref().with_extension("tmp");
+        {
+            let mut f = fs::File::create(&tmp_path)
+                .map_err(|e| format!("failed to create auth file: {}", e))?;
+            f.write_all(json.as_bytes())
+                .map_err(|e| format!("failed to write auth file: {}", e))?;
+            f.flush().map_err(|e| format!("{}", e))?;
+        }
+        fs::rename(&tmp_path, path.as_ref())
+            .map_err(|e| format!("failed to rename auth file: {}", e))?;
+        Ok(())
+    }
+
+    /// Load auth state from disk.
+    pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self, String> {
+        let data = fs::read_to_string(path.as_ref())
+            .map_err(|e| format!("failed to read auth file: {}", e))?;
+        let state: SerializableAuthState = serde_json::from_str(&data)
+            .map_err(|e| format!("deserialization error: {}", e))?;
+        state.into_auth_store()
+            .map_err(|e| format!("failed to construct auth store: {}", e))
+    }
+
+    /// Replace all internal state with the contents of the given file.
+    /// Useful when AuthStore is behind an Arc and can't be reassigned.
+    pub fn load_into_from_file(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let loaded = Self::load_from_file(path)?;
+        self.replace_with(loaded);
+        Ok(())
+    }
+
+    /// Replace all internal state with that of another AuthStore.
+    fn replace_with(&self, other: AuthStore) {
+        *self.users.write().unwrap() = other.users.into_inner().unwrap();
+        *self.roles.write().unwrap() = other.roles.into_inner().unwrap();
+        *self.role_privileges.write().unwrap() = other.role_privileges.into_inner().unwrap();
+        *self.role_denied_privileges.write().unwrap() = other.role_denied_privileges.into_inner().unwrap();
+        *self.auth_enabled.write().unwrap() = other.auth_enabled.into_inner().unwrap();
+        *self.ldap_config.write().unwrap() = other.ldap_config.into_inner().unwrap();
+        *self.lockout_config.write().unwrap() = other.lockout_config.into_inner().unwrap();
+        *self.password_policy.write().unwrap() = other.password_policy.into_inner().unwrap();
+        // Preserve audit log and failed attempts (transient state)
     }
 }
 
@@ -802,6 +941,119 @@ impl SessionToken {
             .unwrap_or_default()
             .as_secs();
         now > self.expires_at
+    }
+}
+
+// ─── LDAP authentication implementation ────────────────────────────────────────
+
+/// Attempt an LDAP simple bind with search for the user's DN.
+fn ldap_bind_and_search(
+    config: &LdapConfig,
+    username: &str,
+    password: &str,
+) -> Result<(), AuthError> {
+    use ldap3::{LdapConn, LdapConnSettings, SearchEntry};
+
+    let settings = LdapConnSettings::new()
+        .set_conn_timeout(std::time::Duration::from_secs(5));
+
+    let mut ldap = LdapConn::with_settings(settings, &config.url)
+        .map_err(|e| AuthError::LdapError(format!("LDAP connect failed: {}", e)))?;
+
+    if !config.bind_dn.is_empty() {
+        ldap.simple_bind(&config.bind_dn, &config.bind_password)
+            .map_err(|e| AuthError::LdapError(format!("LDAP search bind failed: {}", e)))?
+            .success()
+            .map_err(|e| AuthError::LdapError(format!("LDAP search bind error: {}", e)))?;
+    }
+
+    let filter = config.user_filter.replace("%u", username);
+    let results = ldap
+        .search(&config.base_dn, ldap3::Scope::Subtree, &filter, vec!["dn"])
+        .map_err(|e| AuthError::LdapError(format!("LDAP search failed: {}", e)))?;
+
+    let (entries, _) = results
+        .success()
+        .map_err(|e| AuthError::LdapError(format!("LDAP search error: {}", e)))?;
+
+    if entries.is_empty() {
+        return Err(AuthError::UserNotFound);
+    }
+
+    let search_entry = SearchEntry::construct(entries.into_iter().next().unwrap());
+    let user_dn = &search_entry.dn;
+
+    ldap.simple_bind(user_dn, password)
+        .map_err(|e| AuthError::LdapError(format!("LDAP user bind failed: {}", e)))?
+        .success()
+        .map_err(|e| AuthError::LdapError(format!("LDAP authentication failed: {}", e)))?;
+
+    Ok(())
+}
+
+// ─── Serializable auth state for disk persistence ────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct SerializableAuthState {
+    users: HashMap<String, User>,
+    roles: HashSet<String>,
+    role_privileges: HashMap<String, HashSet<String>>,
+    role_denied_privileges: HashMap<String, HashSet<String>>,
+    auth_enabled: bool,
+    ldap_config: Option<LdapConfig>,
+    lockout_config: LockoutConfig,
+    password_policy: PasswordPolicy,
+}
+
+impl SerializableAuthState {
+    fn from_auth_store(store: &AuthStore) -> Result<Self, String> {
+        let users = store.users.read().map_err(|e| format!("{}", e))?.clone();
+        let roles = store.roles.read().map_err(|e| format!("{}", e))?.clone();
+        let role_privileges = store
+            .role_privileges
+            .read()
+            .map_err(|e| format!("{}", e))?
+            .clone();
+        let role_denied_privileges = store
+            .role_denied_privileges
+            .read()
+            .map_err(|e| format!("{}", e))?
+            .clone();
+        let auth_enabled = *store.auth_enabled.read().map_err(|e| format!("{}", e))?;
+        let ldap_config = store.ldap_config.read().map_err(|e| format!("{}", e))?.clone();
+        let lockout_config = store.lockout_config.read().map_err(|e| format!("{}", e))?.clone();
+        let password_policy = store
+            .password_policy
+            .read()
+            .map_err(|e| format!("{}", e))?
+            .clone();
+
+        Ok(Self {
+            users,
+            roles,
+            role_privileges,
+            role_denied_privileges,
+            auth_enabled,
+            ldap_config,
+            lockout_config,
+            password_policy,
+        })
+    }
+
+    fn into_auth_store(self) -> Result<AuthStore, String> {
+        Ok(AuthStore {
+            users: RwLock::new(self.users),
+            roles: RwLock::new(self.roles),
+            role_privileges: RwLock::new(self.role_privileges),
+            role_denied_privileges: RwLock::new(self.role_denied_privileges),
+            auth_enabled: RwLock::new(self.auth_enabled),
+            ldap_config: RwLock::new(self.ldap_config),
+            failed_attempts: RwLock::new(HashMap::new()),
+            lockout_config: RwLock::new(self.lockout_config),
+            password_policy: RwLock::new(self.password_policy),
+            audit_log: RwLock::new(Vec::new()),
+            max_audit_entries: 10000,
+        })
     }
 }
 
@@ -1091,5 +1343,51 @@ mod tests {
         assert!(!store.get_audit_log().is_empty());
         store.clear_audit_log();
         assert!(store.get_audit_log().is_empty());
+    }
+
+    #[test]
+    fn test_auth_persistence_roundtrip() {
+        let tmp = "/tmp/mgauth_test.json";
+        let _ = fs::remove_file(tmp);
+
+        let store = AuthStore::new();
+        store.set_enabled(true);
+        store.add_user("alice", &hash_password("secret123"), Role::Admin);
+        store.add_user("bob", &hash_password("bobpw"), Role::ReadOnly);
+        store.create_role("analyst").unwrap();
+        store.grant_role("bob", "analyst").unwrap();
+        store
+            .grant_privileges(
+                "analyst".to_string(),
+                false,
+                vec![
+                    mgparser::ast::Privilege::Stats,
+                    mgparser::ast::Privilege::Auth,
+                ],
+            )
+            .unwrap();
+
+        // Verify in-memory state before save
+        let privs_before = store.list_privileges("analyst", false);
+        assert!(!privs_before.is_empty(), "privileges before save should not be empty");
+
+        store.save_to_file(tmp).unwrap();
+        assert!(Path::new(tmp).exists());
+
+        let loaded = AuthStore::load_from_file(tmp).unwrap();
+        assert!(loaded.is_enabled());
+        assert_eq!(loaded.list_usernames().len(), 2);
+        assert!(loaded.authenticate("alice", "secret123").is_ok());
+        assert!(loaded.authenticate("bob", "bobpw").is_ok());
+        assert!(loaded.authenticate("alice", "wrong").is_err());
+
+        // Verify role and privileges were restored
+        let roles = loaded.list_roles();
+        assert!(roles.contains(&"analyst".to_string()));
+
+        let privs = loaded.list_privileges("analyst", false);
+        assert!(!privs.is_empty(), "role privileges should not be empty");
+
+        fs::remove_file(tmp).ok();
     }
 }

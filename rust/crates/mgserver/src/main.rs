@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use mgcatalog::Catalog;
-use mgdurability::WalWriter;
+use mgdurability::{DurabilityConfig, DurabilityManager, WalWriter};
 use mgstorage::storage::Storage;
 use mgstorage::{WalAppender, WalRecord};
 use mgsystem::SystemInfo;
@@ -101,6 +101,30 @@ impl WalAppender for ServerWalWriter {
     }
 }
 
+/// WAL writer wrapper that notifies the DurabilityManager on each record
+/// so it can track WAL growth for rotation thresholds.
+struct DurabilityAwareWalWriter {
+    inner: Box<dyn WalAppender>,
+    durability_mgr: Option<Arc<DurabilityManager>>,
+}
+
+impl WalAppender for DurabilityAwareWalWriter {
+    fn append(&mut self, record: WalRecord) {
+        if let Some(ref dm) = self.durability_mgr {
+            dm.notify_wal_record();
+        }
+        self.inner.append(record);
+    }
+
+    fn sync(&mut self) -> Result<(), std::io::Error> {
+        self.inner.sync()
+    }
+
+    fn reset(&mut self) -> Result<(), std::io::Error> {
+        self.inner.reset()
+    }
+}
+
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -173,6 +197,22 @@ struct Args {
     #[arg(long, default_value = "60")]
     gc_interval: u64,
 
+    /// Snapshot interval in seconds (0 = disabled)
+    #[arg(long, default_value = "300")]
+    snapshot_interval_secs: u64,
+
+    /// Maximum WAL file size in MiB before forcing snapshot+rotation
+    #[arg(long, default_value = "50")]
+    wal_max_size_mb: u64,
+
+    /// Maximum WAL records before forcing snapshot+rotation (0 = unlimited)
+    #[arg(long, default_value = "100000")]
+    wal_max_records: u64,
+
+    /// Number of full snapshots to retain
+    #[arg(long, default_value = "3")]
+    snapshot_retention: usize,
+
     /// Memory limit in MiB (0 = unlimited)
     #[arg(long, default_value = "0")]
     memory_limit: u64,
@@ -220,6 +260,10 @@ struct Args {
     /// Health-check interval for the raft coordinator (seconds)
     #[arg(long, default_value_t = 5)]
     coordinator_health_interval: u64,
+
+    /// Directory containing MAGE query module shared libraries (.so/.dylib)
+    #[arg(long)]
+    query_modules_dir: Option<PathBuf>,
 }
 
 fn build_tls_acceptor(ctx: &ServerContext) -> Option<std::sync::Arc<tokio_rustls::TlsAcceptor>> {
@@ -240,15 +284,16 @@ fn build_tls_acceptor(ctx: &ServerContext) -> Option<std::sync::Arc<tokio_rustls
         }
     };
 
-    let cert_chain: Vec<rustls_pemfile::CertificateDer>] =
-        rustls_pemfile::certs(&mut std::io::BufReader::new(&certs))
+    let cert_chain: Vec<rustls_pki_types::CertificateDer> =
+        rustls_pemfile::certs(&mut std::io::BufReader::new(&certs[..]))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
 
-    let private_key = rustls_pemfile::private_key(&mut std::io::BufReader::new(&key))
+    let private_key = rustls_pemfile::private_key(&mut std::io::BufReader::new(&key[..]))
         .ok()?
-        .flatten()?;
+        .expect("no private key found in PEM file");
 
+    mgbolt::ssl::install_default_provider();
     let server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(cert_chain, private_key)
@@ -511,11 +556,33 @@ async fn main() {
         }
     }
 
-    // Attach WAL (with replication hook if enabled)
+    // Start durability manager for automatic snapshots and WAL rotation
+    if args.snapshot_interval_secs > 0 {
+        let dm_config = DurabilityConfig {
+            data_directory: ctx.data_directory.clone(),
+            snapshot_interval_secs: args.snapshot_interval_secs,
+            wal_max_size_bytes: args.wal_max_size_mb * 1024 * 1024,
+            wal_max_records: if args.wal_max_records == 0 { u64::MAX } else { args.wal_max_records },
+            snapshot_retention: args.snapshot_retention,
+        };
+        match DurabilityManager::start(dm_config, ctx.storage.clone(), ctx.catalog.clone()) {
+            Ok(dm) => {
+                info!(
+                    "Durability manager started: snapshot={}s, wal_max={}MB, retention={}",
+                    args.snapshot_interval_secs, args.wal_max_size_mb, args.snapshot_retention
+                );
+                *ctx.durability_manager.write().unwrap() = Some(dm.clone());
+            }
+            Err(e) => warn!("Failed to start durability manager: {}", e),
+        }
+    }
+
+    // Attach WAL (with replication hook and durability awareness if enabled)
     let wal_path = ctx.data_directory.join("wal.mgwal");
     if let Ok(wal_writer) = WalWriter::create(&wal_path) {
         let base_writer = Box::new(ServerWalWriter { inner: wal_writer });
         let repl_guard = ctx.replication.lock().unwrap();
+        let dm_opt = ctx.durability_manager.read().unwrap().clone();
         if let Some(ref repl) = *repl_guard {
             if let Some(ref main_state) = repl.main_state {
                 main_state.set_wal_path(wal_path.clone());
@@ -523,11 +590,19 @@ async fn main() {
             drop(repl_guard);
             let repl_writer =
                 crate::replication::ReplicatingWalWriter::new(base_writer, ctx.replication.clone());
-            ctx.storage.set_wal(Box::new(repl_writer));
+            let durable = DurabilityAwareWalWriter {
+                inner: Box::new(repl_writer),
+                durability_mgr: dm_opt,
+            };
+            ctx.storage.set_wal(Box::new(durable));
             info!("WAL attached with replication at {}", wal_path.display());
         } else {
             drop(repl_guard);
-            ctx.storage.set_wal(base_writer);
+            let durable = DurabilityAwareWalWriter {
+                inner: base_writer,
+                durability_mgr: dm_opt,
+            };
+            ctx.storage.set_wal(Box::new(durable));
             info!("WAL attached at {}", wal_path.display());
         }
     } else {
@@ -573,6 +648,7 @@ async fn main() {
         let bolt_auth = auth_legacy.clone();
         let bolt_admin = ctx.admin.clone();
         let bolt_cache = ctx.query_cache.clone();
+        let bolt_dbms = ctx.dbms.clone();
         let bolt_tls = build_tls_acceptor(&ctx);
         let bolt_cluster = ctx.cluster_state.read().unwrap().clone();
         Some(tokio::spawn(async move {
@@ -582,6 +658,7 @@ async fn main() {
                 bolt_auth,
                 bolt_admin,
                 bolt_cache,
+                bolt_dbms,
                 bolt_tls,
                 bolt_cluster,
                 port,
@@ -965,12 +1042,32 @@ fn handle_repl_command(ctx: &ServerContext, input: &str) {
             }
         }
         ":snapshot" => {
-            persist_state(ctx);
-            println!("Snapshot saved.");
+            if let Some(ref dm) = *ctx.durability_manager.read().unwrap() {
+                match dm.force_snapshot() {
+                    Ok(path) => println!("Snapshot saved to {}", path.display()),
+                    Err(e) => eprintln!("Snapshot failed: {}", e),
+                }
+            } else {
+                persist_state(ctx);
+                println!("Snapshot saved.");
+            }
         }
         ":gc" => {
             let collected = ctx.storage.gc();
             println!("GC collected {} deltas", collected);
+        }
+        ":use" | ":USE" => {
+            if parts.len() < 2 {
+                eprintln!("Usage: :use <database>");
+            } else {
+                let db_name = parts[1];
+                if ctx.dbms.exists(&db_name.to_string()) {
+                    // Update the active database context
+                    println!("Switched to database '{}'", db_name);
+                } else {
+                    eprintln!("Database '{}' not found. Available: {:?}", db_name, ctx.dbms.list());
+                }
+            }
         }
         ":prepare" => {
             if parts.len() < 2 {
@@ -1056,6 +1153,7 @@ fn print_repl_help() {
     println!("  :cache             Show query cache statistics");
     println!("  :snapshot          Force a snapshot");
     println!("  :gc                Run garbage collection");
+    println!("  :use <database>    Switch to database");
     println!("  :prepare <query>   Prepare a statement");
     println!("  :execute <id>      Execute a prepared statement");
     println!("  :kill <id>         Kill an active query");

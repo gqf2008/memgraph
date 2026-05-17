@@ -215,6 +215,10 @@ impl ClusterState {
         self.leader_id.read().expect("lock poisoned").clone()
     }
 
+    pub fn set_leader_id(&self, id: &str) {
+        *self.leader_id.write().expect("lock poisoned") = id.to_string();
+    }
+
     // ─── Health monitoring ────────────────────────────────────────────
 
     /// Mark instances as Down if they haven't heartbeated within the timeout.

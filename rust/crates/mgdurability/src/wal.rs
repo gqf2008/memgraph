@@ -4,7 +4,7 @@
 //! Each record is SLK-framed: `[u32 LE size][SLK payload][u32 LE CRC32 checksum][0x00000000 footer]`.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 use mgslk::{Builder, Reader, SlkLoad, SlkSave, DURABILITY_VERSION, WAL_MAGIC};
@@ -75,6 +75,20 @@ impl WalWriter {
     pub fn sync(&mut self) -> Result<(), std::io::Error> {
         self.file.flush()?;
         self.file.sync_all()
+    }
+
+    /// Reset the WAL: truncate the current file and rewrite the header.
+    /// Called after a snapshot to prevent unbounded WAL growth.
+    pub fn reset(&mut self) -> Result<(), std::io::Error> {
+        self.file.flush()?;
+        self.file.sync_all()?;
+        self.file.set_len(0)?;
+        self.file.seek(std::io::SeekFrom::Start(0))?;
+        self.file.write_all(WAL_MAGIC)?;
+        self.file.write_all(&DURABILITY_VERSION.to_le_bytes())?;
+        self.file.flush()?;
+        self.records_written = 0;
+        Ok(())
     }
 
     pub fn records_written(&self) -> u64 {

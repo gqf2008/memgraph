@@ -4,6 +4,7 @@ use crate::property_store::PropertyStore;
 use crate::spin_lock::RwSpinLock;
 use crate::types::{EdgeTypeId, Gid, LabelId};
 
+use crossbeam_skiplist::SkipMap;
 use std::ptr::NonNull;
 
 // ─── EdgeTriple ────────────────────────────────────────────────────────────
@@ -17,6 +18,14 @@ pub struct EdgeTriple {
     pub edge: EdgeRef,
 }
 
+// Safety: EdgeTriple is only accessed under Vertex's lock or storage-level GC lock.
+unsafe impl Send for EdgeTriple {}
+unsafe impl Sync for EdgeTriple {}
+
+/// Key for the adjacency skip list: (edge_type, edge_gid).
+/// This enables O(log deg) lookup by edge type.
+pub type AdjKey = (EdgeTypeId, Gid);
+
 // ─── Vertex ────────────────────────────────────────────────────────────────
 
 /// A graph vertex (node).
@@ -24,12 +33,11 @@ pub struct EdgeTriple {
 /// Layout:
 ///   - Gid:             8 bytes
 ///   - labels:         24 bytes (Vec)
-///   - in_edges:       24 bytes (Vec)
-///   - out_edges:      24 bytes (Vec)
+///   - in_edges:       SkipMap (lock-free concurrent access)
+///   - out_edges:      SkipMap (lock-free concurrent access)
 ///   - properties:     ≤8 bytes (pointer to PropertyStore storage)
 ///   - delta_:          8 bytes (PointerPack<2> = AtomicU64)
 ///   - lock:            4 bytes (AtomicU32)
-///     Total:            ~100 bytes
 pub struct Vertex {
     /// Globally unique vertex ID.
     pub gid: Gid,
@@ -37,11 +45,11 @@ pub struct Vertex {
     /// Labels attached to this vertex.
     pub labels: Vec<LabelId>,
 
-    /// Incoming edges (edge_type, other_vertex, edge_ref).
-    pub in_edges: Vec<EdgeTriple>,
+    /// Incoming edges: (edge_type, edge_gid) → EdgeTriple.
+    pub in_edges: SkipMap<AdjKey, EdgeTriple>,
 
-    /// Outgoing edges (edge_type, other_vertex, edge_ref).
-    pub out_edges: Vec<EdgeTriple>,
+    /// Outgoing edges: (edge_type, edge_gid) → EdgeTriple.
+    pub out_edges: SkipMap<AdjKey, EdgeTriple>,
 
     /// Property values.
     pub properties: PropertyStore,
@@ -75,8 +83,8 @@ impl Vertex {
         Self {
             gid,
             labels: Vec::new(),
-            in_edges: Vec::new(),
-            out_edges: Vec::new(),
+            in_edges: SkipMap::new(),
+            out_edges: SkipMap::new(),
             properties: PropertyStore::new(),
             delta_: PointerPack::new_with(delta, 0),
             lock: RwSpinLock::new(),
@@ -139,7 +147,7 @@ impl std::fmt::Debug for Vertex {
             .field("in_edges", &self.in_edges.len())
             .field("out_edges", &self.out_edges.len())
             .field("deleted", &self.deleted())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

@@ -11,7 +11,7 @@ use crate::snapshot::{EdgeSnapshotEntry, SnapshotData, SnapshotReader, VertexSna
 use crate::wal::WalReader;
 
 /// Recovery orchestrator that can load snapshots and WALs from either
-/// current Rust format or legacy C++ format (v14-v34).
+/// current Rust format or legacy C++ format (v14-v35).
 pub struct Recovery;
 
 impl Recovery {
@@ -31,7 +31,7 @@ impl Recovery {
             .map_err(|e| format!("snapshot read error: {}", e))?;
 
         let snap = match crate::version::detect_format(&snap_data) {
-            Ok(crate::version::FormatKind::LegacyCpp(v)) if (14..=34).contains(&v) => {
+            Ok(crate::version::FormatKind::LegacyCpp(v)) if mgslk::is_cpp_version(v) => {
                 crate::legacy::LegacySnapshotReader::read(&snap_data, v)
                     .map_err(|e| format!("legacy snapshot parse error: {}", e))?
             }
@@ -56,7 +56,7 @@ impl Recovery {
             };
 
             let records = match crate::version::detect_format(&wal_data) {
-                Ok(crate::version::FormatKind::LegacyCpp(v)) if (14..=34).contains(&v) => {
+                Ok(crate::version::FormatKind::LegacyCpp(v)) if mgslk::is_cpp_version(v) => {
                     crate::legacy::LegacyWalReader::read(&wal_data, v)
                         .map_err(|e| format!("legacy WAL parse error: {}", e))?
                 }
@@ -91,7 +91,7 @@ impl Recovery {
         Ok(())
     }
 
-    /// Recover from a legacy C++ snapshot file (v14-v34).
+    /// Recover from a legacy C++ snapshot file (v14-v35).
     pub fn recover_from_legacy_snapshot(
         storage: &Storage,
         catalog: Option<&mgcatalog::Catalog>,
@@ -103,7 +103,7 @@ impl Recovery {
         Self::restore_snapshot(storage, catalog, &snap)
     }
 
-    /// Recover from a legacy C++ WAL file (v14-v34).
+    /// Recover from a legacy C++ WAL file (v14-v35).
     pub fn recover_from_legacy_wal(
         storage: &Storage,
         path: impl AsRef<Path>,

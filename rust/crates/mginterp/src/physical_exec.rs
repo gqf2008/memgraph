@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mgcore::delta::IsolationLevel;
-use mgcore::property_value::{EdgeRefValue, PropertyValue, VertexRef};
+use mgcore::property_value::{EdgeRefValue, PathValue, PropertyValue, VertexRef};
+use mgcore::types::Gid;
 use mgparser::ast::{Direction, Expression};
 use mgplanner::{PhysicalOp, PhysicalPlan};
 use mgstorage::storage::Storage;
@@ -681,6 +682,141 @@ fn execute_plan_rows(
                                 }
                             }
                         }
+                    }
+                }
+            }
+            Ok(rows)
+        }
+        PhysicalOp::VarLengthExpand {
+            from_alias,
+            edge_alias,
+            to_alias,
+            direction,
+            edge_types,
+            edge_properties,
+            min_hops,
+            max_hops,
+            path_algorithm,
+            ref child,
+        } => {
+            let child_rows = execute_plan_rows(storage, &child.op, tx)?;
+            // Build edge/node patterns once — same for all rows
+            let edge_pat = mgparser::ast::EdgePattern {
+                alias: edge_alias.clone(),
+                edge_types: edge_types.clone(),
+                properties: edge_properties.clone(),
+                direction: *direction,
+                var_length: Some((*min_hops, *max_hops)),
+                path_algorithm: *path_algorithm,
+                kshortest_limit: None,
+            };
+            let node_pat = mgparser::ast::NodePattern {
+                alias: to_alias.clone(),
+                labels: vec![],
+                properties: vec![],
+            };
+            let mut rows = Vec::new();
+            for row in &child_rows {
+                crate::check_query_timeout()?;
+                let start_gid = match row.get(from_alias) {
+                    Some(PropertyValue::Vertex(vr)) => Some(vr.gid),
+                    Some(PropertyValue::Int(gid_int)) => Some(Gid::from(*gid_int as u64)),
+                    _ => None,
+                };
+                let Some(gid) = start_gid else { continue; };
+
+                let start_path = mgcore::property_value::PathValue::new(
+                    mgcore::property_value::VertexRef::new(gid, vec![], mgcore::property_store::PropertyStore::new()),
+                );
+
+                let results = crate::traverse_variable_length(
+                    storage, tx, gid, start_path, &edge_pat, &node_pat,
+                    *min_hops, *max_hops, row,
+                )?;
+
+                for (binding, _, _) in results {
+                    let mut merged = row.clone();
+                    for (k, v) in binding {
+                        merged.insert(k, v);
+                    }
+                    rows.push(merged);
+                }
+            }
+            Ok(rows)
+        }
+        // ── Write operators ──────────────────────────────────────────────
+        PhysicalOp::CreateVertex {
+            ref labels,
+            ref properties,
+            ref child,
+        } => {
+            let rows = execute_plan_rows(storage, &child.op, tx)?;
+            for row in &rows {
+                let gid = storage.allocate_gid();
+                storage.create_vertex(tx, gid)?;
+                for &label in labels {
+                    storage.vertex_add_label(tx, gid, label)?;
+                }
+                for &(prop_id, ref expr) in properties {
+                    let val = eval_expression_with_storage(expr, row, Some(storage));
+                    storage.vertex_set_property(tx, gid, prop_id, val)?;
+                }
+            }
+            Ok(rows)
+        }
+        PhysicalOp::SetProperty {
+            key,
+            ref value,
+            ref child,
+        } => {
+            let rows = execute_plan_rows(storage, &child.op, tx)?;
+            for row in &rows {
+                let val = eval_expression_with_storage(value, row, Some(storage));
+                // Determine target GID from row binding
+                for (alias, pv) in row {
+                    if let PropertyValue::Vertex(vr) = pv {
+                        storage.vertex_set_property(tx, vr.gid, *key, val.clone())?;
+                    } else if let PropertyValue::Edge(er) = pv {
+                        storage.edge_set_property(tx, er.gid, *key, val.clone())?;
+                    }
+                }
+            }
+            Ok(rows)
+        }
+        PhysicalOp::Delete {
+            detach,
+            ref child,
+        } => {
+            let rows = execute_plan_rows(storage, &child.op, tx)?;
+            for row in &rows {
+                for (_, pv) in row {
+                    match pv {
+                        PropertyValue::Vertex(vr) => {
+                            if *detach {
+                                // Delete connected edges first
+                                let out_edges: Vec<mgcore::types::Gid> = storage
+                                    .vertex_out_edges(vr.gid, None)
+                                    .into_iter()
+                                    .map(|(_, edge_gid, _)| edge_gid)
+                                    .collect();
+                                for eid in &out_edges {
+                                    storage.delete_edge(tx, *eid).ok();
+                                }
+                                let in_edges: Vec<mgcore::types::Gid> = storage
+                                    .vertex_in_edges(vr.gid, None)
+                                    .into_iter()
+                                    .map(|(_, edge_gid, _)| edge_gid)
+                                    .collect();
+                                for eid in &in_edges {
+                                    storage.delete_edge(tx, *eid).ok();
+                                }
+                            }
+                            storage.delete_vertex(tx, vr.gid)?;
+                        }
+                        PropertyValue::Edge(er) => {
+                            storage.delete_edge(tx, er.gid)?;
+                        }
+                        _ => {}
                     }
                 }
             }

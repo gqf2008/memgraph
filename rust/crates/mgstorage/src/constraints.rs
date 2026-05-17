@@ -5,7 +5,7 @@ use std::sync::RwLock;
 
 use mgcore::property_store::PropertyStore;
 use mgcore::property_value::PropertyValue;
-use mgcore::types::{Gid, LabelId, PropertyId};
+use mgcore::types::{EdgeTypeId, Gid, LabelId, PropertyId};
 
 /// Error from constraint violation.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +21,12 @@ pub enum ConstraintError {
     },
     TypeViolation {
         label: LabelId,
+        property: PropertyId,
+        expected: ConstraintType,
+        got: String,
+    },
+    EdgeTypeViolation {
+        edge_type: EdgeTypeId,
         property: PropertyId,
         expected: ConstraintType,
         got: String,
@@ -90,6 +96,12 @@ struct TypeConstraintEntry {
     expected: ConstraintType,
 }
 
+struct EdgeTypeConstraintEntry {
+    edge_type: EdgeTypeId,
+    property: PropertyId,
+    expected: ConstraintType,
+}
+
 /// All constraints enforced on the graph.
 /// Serializable description of a constraint.
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +122,7 @@ pub struct Constraints {
     unique: RwLock<Vec<UniqueConstraintEntry>>,
     existence: RwLock<Vec<ExistenceConstraintEntry>>,
     type_constraints: RwLock<Vec<TypeConstraintEntry>>,
+    edge_type_constraints: RwLock<Vec<EdgeTypeConstraintEntry>>,
 }
 
 fn format_unique_key(
@@ -143,6 +156,7 @@ impl Constraints {
             unique: RwLock::new(Vec::new()),
             existence: RwLock::new(Vec::new()),
             type_constraints: RwLock::new(Vec::new()),
+            edge_type_constraints: RwLock::new(Vec::new()),
         }
     }
 
@@ -344,6 +358,67 @@ impl Constraints {
             }
         }
         Ok(())
+    }
+
+    // ─── Edge type constraints ──────────────────────────────────────────
+
+    pub fn add_edge_type_constraint(
+        &self,
+        edge_type: EdgeTypeId,
+        property: PropertyId,
+        expected: ConstraintType,
+    ) {
+        let mut guard = self.edge_type_constraints.write().unwrap();
+        if !guard
+            .iter()
+            .any(|c| c.edge_type == edge_type && c.property == property)
+        {
+            guard.push(EdgeTypeConstraintEntry {
+                edge_type,
+                property,
+                expected,
+            });
+        }
+    }
+
+    pub fn remove_edge_type_constraint(&self, edge_type: EdgeTypeId, property: PropertyId) {
+        let mut guard = self.edge_type_constraints.write().unwrap();
+        guard.retain(|c| !(c.edge_type == edge_type && c.property == property));
+    }
+
+    pub fn check_edge_type(
+        &self,
+        edge_type: EdgeTypeId,
+        property: PropertyId,
+        value: &PropertyValue,
+    ) -> Result<(), ConstraintError> {
+        let guard = self.edge_type_constraints.read().unwrap();
+        for constraint in guard.iter() {
+            if constraint.edge_type != edge_type || constraint.property != property {
+                continue;
+            }
+            if !constraint.expected.matches_value(value) {
+                return Err(ConstraintError::EdgeTypeViolation {
+                    edge_type: constraint.edge_type,
+                    property: constraint.property,
+                    expected: constraint.expected,
+                    got: format!("{:?}", ConstraintType::from_value(value)),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn has_edge_type_constraint(&self, edge_type: EdgeTypeId, property: PropertyId) -> bool {
+        self.edge_type_constraints
+            .read()
+            .unwrap()
+            .iter()
+            .any(|c| c.edge_type == edge_type && c.property == property)
+    }
+
+    pub fn drop_edge_type_constraint(&self, edge_type: EdgeTypeId, property: PropertyId) {
+        self.remove_edge_type_constraint(edge_type, property);
     }
 
     // ─── Query ───────────────────────────────────────────────────────────
@@ -551,5 +626,35 @@ mod tests {
         ttl.set_ttl(label, 1000);
         assert!(!ttl.is_expired(&[label], 100, 500));
         assert!(ttl.is_expired(&[label], 100, 1200));
+    }
+
+    #[test]
+    fn test_edge_type_constraint() {
+        let constraints = Constraints::new();
+        let edge_type = EdgeTypeId::from(5u32);
+        let prop = PropertyId::from(0u32);
+
+        constraints.add_edge_type_constraint(edge_type, prop, ConstraintType::String);
+        assert!(constraints
+            .check_edge_type(edge_type, prop, &PropertyValue::String("hello".into()))
+            .is_ok());
+        assert!(constraints
+            .check_edge_type(edge_type, prop, &PropertyValue::Int(42))
+            .is_err());
+        assert!(constraints
+            .check_edge_type(edge_type, prop, &PropertyValue::Null)
+            .is_ok());
+
+        // Different edge type — not constrained
+        let other_type = EdgeTypeId::from(6u32);
+        assert!(constraints
+            .check_edge_type(other_type, prop, &PropertyValue::Int(42))
+            .is_ok());
+
+        // Remove constraint
+        constraints.remove_edge_type_constraint(edge_type, prop);
+        assert!(constraints
+            .check_edge_type(edge_type, prop, &PropertyValue::Int(42))
+            .is_ok());
     }
 }

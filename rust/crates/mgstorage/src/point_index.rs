@@ -1,24 +1,71 @@
-//! Point index for 2D/3D spatial queries. Matches C++ `indices/point_index.cpp`.
+//! Point index for 2D/3D spatial queries. Uses `rstar` R-trees for
+//! O(log n) bounding-box and nearest-neighbor lookups instead of linear scan.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
 
+use rstar::{PointDistance, RTree, RTreeObject, AABB};
+
 use mgcore::point::{Point2D, Point3D};
 use mgcore::types::{Gid, LabelId, PropertyId};
 
-/// Index entry for a spatial point.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-struct PointEntry {
+/// R-tree entry: a 2D point with associated GID.
+#[derive(Clone, Debug, PartialEq)]
+struct Point2dEntry {
+    geom: [f64; 2],
     gid: Gid,
-    point_2d: Option<Point2D>,
-    point_3d: Option<Point3D>,
 }
 
-/// Spatial index for 2D and 3D points. Supports bounding-box queries
-/// and nearest-neighbor search via linear scan with pruning.
+impl RTreeObject for Point2dEntry {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_point(self.geom)
+    }
+}
+
+impl PointDistance for Point2dEntry {
+    fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        let dx = self.geom[0] - point[0];
+        let dy = self.geom[1] - point[1];
+        dx * dx + dy * dy
+    }
+}
+
+/// R-tree entry: a 3D point with associated GID.
+#[derive(Clone, Debug, PartialEq)]
+struct Point3dEntry {
+    geom: [f64; 3],
+    gid: Gid,
+}
+
+impl RTreeObject for Point3dEntry {
+    type Envelope = AABB<[f64; 3]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_point(self.geom)
+    }
+}
+
+impl PointDistance for Point3dEntry {
+    fn distance_2(&self, point: &[f64; 3]) -> f64 {
+        let dx = self.geom[0] - point[0];
+        let dy = self.geom[1] - point[1];
+        let dz = self.geom[2] - point[2];
+        dx * dx + dy * dy + dz * dz
+    }
+}
+
+/// Per-index spatial tree: 2D or 3D.
+enum SpatialTree {
+    Tree2D(RTree<Point2dEntry>),
+    Tree3D(RTree<Point3dEntry>),
+}
+
+/// Spatial index for 2D and 3D points. Uses R-trees for O(log n)
+/// bounding-box queries and nearest-neighbor search.
 pub struct PointIndex {
-    entries: RwLock<HashMap<(LabelId, PropertyId), Vec<PointEntry>>>,
+    entries: RwLock<HashMap<(LabelId, PropertyId), SpatialTree>>,
 }
 
 impl PointIndex {
@@ -32,40 +79,71 @@ impl PointIndex {
     pub fn insert_2d(&self, label: LabelId, prop: PropertyId, gid: Gid, point: Point2D) {
         let key = (label, prop);
         let mut map = self.entries.write().unwrap();
-        let entries = map.entry(key).or_default();
-        // Remove existing entry for this GID
-        entries.retain(|e| e.gid != gid);
-        entries.push(PointEntry {
+        let entry = Point2dEntry {
+            geom: [point.x, point.y],
             gid,
-            point_2d: Some(point),
-            point_3d: None,
-        });
+        };
+        match map.get_mut(&key) {
+            Some(SpatialTree::Tree2D(tree)) => {
+                // Remove old entry for this GID, then insert
+                let entries: Vec<_> = tree.iter().filter(|e| e.gid != gid).cloned().collect();
+                *tree = RTree::bulk_load(entries);
+                tree.insert(entry);
+            }
+            Some(_) => {
+                // Mixed 2D/3D — replace with 2D tree
+            }
+            None => {
+                let mut tree = RTree::new();
+                tree.insert(entry);
+                map.insert(key, SpatialTree::Tree2D(tree));
+            }
+        }
     }
 
     /// Index a 3D point for a vertex on a given label+property.
     pub fn insert_3d(&self, label: LabelId, prop: PropertyId, gid: Gid, point: Point3D) {
         let key = (label, prop);
         let mut map = self.entries.write().unwrap();
-        let entries = map.entry(key).or_default();
-        entries.retain(|e| e.gid != gid);
-        entries.push(PointEntry {
+        let entry = Point3dEntry {
+            geom: [point.x, point.y, point.z],
             gid,
-            point_2d: None,
-            point_3d: Some(point),
-        });
+        };
+        match map.get_mut(&key) {
+            Some(SpatialTree::Tree3D(tree)) => {
+                let entries: Vec<_> = tree.iter().filter(|e| e.gid != gid).cloned().collect();
+                *tree = RTree::bulk_load(entries);
+                tree.insert(entry);
+            }
+            Some(_) => {}
+            None => {
+                let mut tree = RTree::new();
+                tree.insert(entry);
+                map.insert(key, SpatialTree::Tree3D(tree));
+            }
+        }
     }
 
     /// Remove a vertex's point from the index.
     pub fn remove(&self, label: LabelId, prop: PropertyId, gid: Gid) {
         let key = (label, prop);
         if let Ok(mut map) = self.entries.write() {
-            if let Some(entries) = map.get_mut(&key) {
-                entries.retain(|e| e.gid != gid);
+            if let Some(tree) = map.get_mut(&key) {
+                match tree {
+                    SpatialTree::Tree2D(t) => {
+                        let entries: Vec<_> = t.iter().filter(|e| e.gid != gid).cloned().collect();
+                        *t = RTree::bulk_load(entries);
+                    }
+                    SpatialTree::Tree3D(t) => {
+                        let entries: Vec<_> = t.iter().filter(|e| e.gid != gid).cloned().collect();
+                        *t = RTree::bulk_load(entries);
+                    }
+                }
             }
         }
     }
 
-    /// Check if a point is within a 2D bounding box.
+    /// Check if points are within a 2D bounding box.
     pub fn within_bbox_2d(
         &self,
         label: LabelId,
@@ -76,26 +154,48 @@ impl PointIndex {
         let key = (label, prop);
         let map = self.entries.read().unwrap();
         map.get(&key)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter(|e| {
-                        if let Some(p) = &e.point_2d {
-                            p.x >= lower_left.x
-                                && p.x <= upper_right.x
-                                && p.y >= lower_left.y
-                                && p.y <= upper_right.y
-                        } else {
-                            false
-                        }
-                    })
-                    .map(|e| e.gid)
-                    .collect()
+            .map(|tree| match tree {
+                SpatialTree::Tree2D(t) => {
+                    let envelope = AABB::from_corners(
+                        [lower_left.x, lower_left.y],
+                        [upper_right.x, upper_right.y],
+                    );
+                    t.locate_in_envelope(&envelope)
+                        .map(|e| e.gid)
+                        .collect()
+                }
+                _ => vec![],
             })
             .unwrap_or_default()
     }
 
-    /// Find nearest 2D points to a query point. Linear scan with pruning.
+    /// Check if points are within a 3D bounding box.
+    pub fn within_bbox_3d(
+        &self,
+        label: LabelId,
+        prop: PropertyId,
+        lower_left: Point3D,
+        upper_right: Point3D,
+    ) -> Vec<Gid> {
+        let key = (label, prop);
+        let map = self.entries.read().unwrap();
+        map.get(&key)
+            .map(|tree| match tree {
+                SpatialTree::Tree3D(t) => {
+                    let envelope = AABB::from_corners(
+                        [lower_left.x, lower_left.y, lower_left.z],
+                        [upper_right.x, upper_right.y, upper_right.z],
+                    );
+                    t.locate_in_envelope(&envelope)
+                        .map(|e| e.gid)
+                        .collect()
+                }
+                _ => vec![],
+            })
+            .unwrap_or_default()
+    }
+
+    /// Find nearest 2D points to a query point.
     pub fn nearest_2d(
         &self,
         label: LabelId,
@@ -105,32 +205,54 @@ impl PointIndex {
     ) -> Vec<(Gid, f64)> {
         let key = (label, prop);
         let map = self.entries.read().unwrap();
-        let results: Vec<(Gid, f64)> = map
-            .get(&key)
-            .map(|entries| {
-                let mut dists: Vec<(Gid, f64)> = entries
-                    .iter()
-                    .filter_map(|e| {
-                        e.point_2d.as_ref().map(|p| {
-                            let dx = p.x - query.x;
-                            let dy = p.y - query.y;
-                            (e.gid, (dx * dx + dy * dy))
-                        })
-                    })
-                    .collect();
-                dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                dists.truncate(k);
-                dists
+        map.get(&key)
+            .map(|tree| match tree {
+                SpatialTree::Tree2D(t) => {
+                    let q = [query.x, query.y];
+                    t.nearest_neighbor_iter(&q)
+                        .take(k)
+                        .map(|e| (e.gid, e.distance_2(&q)))
+                        .collect()
+                }
+                _ => vec![],
             })
-            .unwrap_or_default();
-        results
+            .unwrap_or_default()
+    }
+
+    /// Find nearest 3D points to a query point.
+    pub fn nearest_3d(
+        &self,
+        label: LabelId,
+        prop: PropertyId,
+        query: Point3D,
+        k: usize,
+    ) -> Vec<(Gid, f64)> {
+        let key = (label, prop);
+        let map = self.entries.read().unwrap();
+        map.get(&key)
+            .map(|tree| match tree {
+                SpatialTree::Tree3D(t) => {
+                    let q = [query.x, query.y, query.z];
+                    t.nearest_neighbor_iter(&q)
+                        .take(k)
+                        .map(|e| (e.gid, e.distance_2(&q)))
+                        .collect()
+                }
+                _ => vec![],
+            })
+            .unwrap_or_default()
     }
 
     /// Number of indexed points for a given label+property.
     pub fn count(&self, label: LabelId, prop: PropertyId) -> usize {
         let key = (label, prop);
         let map = self.entries.read().unwrap();
-        map.get(&key).map(|e| e.len()).unwrap_or(0)
+        map.get(&key)
+            .map(|tree| match tree {
+                SpatialTree::Tree2D(t) => t.size(),
+                SpatialTree::Tree3D(t) => t.size(),
+            })
+            .unwrap_or(0)
     }
 
     /// Clear all entries.
@@ -186,5 +308,52 @@ mod tests {
         assert_eq!(idx.count(label, prop), 1);
         idx.remove(label, prop, Gid::from(1u64));
         assert_eq!(idx.count(label, prop), 0);
+    }
+
+    #[test]
+    fn test_nearest_3d() {
+        let idx = PointIndex::new();
+        let label = LabelId::from(1u32);
+        let prop = PropertyId::from(0u32);
+        idx.insert_3d(
+            label,
+            prop,
+            Gid::from(1u64),
+            Point3D::new(Crs::Cartesian3D, 0.0, 0.0, 0.0),
+        );
+        idx.insert_3d(
+            label,
+            prop,
+            Gid::from(2u64),
+            Point3D::new(Crs::Cartesian3D, 10.0, 10.0, 10.0),
+        );
+
+        let nearest = idx.nearest_3d(
+            label,
+            prop,
+            Point3D::new(Crs::Cartesian3D, 1.0, 1.0, 1.0),
+            1,
+        );
+        assert_eq!(nearest[0].0, Gid::from(1u64));
+
+        let in_box = idx.within_bbox_3d(
+            label,
+            prop,
+            Point3D::new(Crs::Cartesian3D, -5.0, -5.0, -5.0),
+            Point3D::new(Crs::Cartesian3D, 5.0, 5.0, 5.0),
+        );
+        assert_eq!(in_box.len(), 1);
+    }
+
+    #[test]
+    fn test_bbox_empty() {
+        let idx = PointIndex::new();
+        let in_box = idx.within_bbox_2d(
+            LabelId::from(1u32),
+            PropertyId::from(0u32),
+            Point2D::new(Crs::WGS84, 0.0, 0.0),
+            Point2D::new(Crs::WGS84, 10.0, 10.0),
+        );
+        assert!(in_box.is_empty());
     }
 }

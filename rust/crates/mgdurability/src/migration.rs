@@ -88,7 +88,7 @@ pub fn convert_legacy_wal_to_current(
     let format = detect_format(&data).map_err(|e| ConversionError::Detect(e.to_string()))?;
 
     match format {
-        crate::version::FormatKind::LegacyCpp(v) if (14..=34).contains(&v) => {
+        crate::version::FormatKind::LegacyCpp(v) if mgslk::is_cpp_version(v) => {
             let records = LegacyWalReader::read(&data, v)?;
             let mut writer = crate::wal::WalWriter::create(output_path)?;
             for rec in &records {

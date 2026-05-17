@@ -213,6 +213,11 @@ pub trait WalAppender: Send + Sync {
     fn sync(&mut self) -> Result<(), std::io::Error> {
         Ok(())
     }
+    /// Reset the WAL: close current file, create a new one at the same path,
+    /// and write the header. Called after a snapshot to truncate the WAL.
+    fn reset(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
+    }
 }
 
 /// Statistics returned by `gc_stats()`.
@@ -234,7 +239,7 @@ pub struct Storage {
     /// Deltas created by active/committed transactions. Keyed by Gid.
     /// These are owned by the storage engine and freed during GC.
     #[allow(clippy::vec_box)]
-    deltas: RwLock<Vec<Box<CoreDelta>>>,
+    deltas: RwLock<HashMap<usize, Box<CoreDelta>>>,
 
     /// Transaction engine for ID allocation and lifecycle.
     pub transaction_engine: TransactionEngine,
@@ -352,7 +357,7 @@ impl Storage {
         Self {
             vertices: RwLock::new(HashMap::new()),
             edges: RwLock::new(HashMap::new()),
-            deltas: RwLock::new(Vec::new()),
+            deltas: RwLock::new(HashMap::new()),
             transaction_engine: TransactionEngine::new(),
             active_timestamps: RwLock::new(BTreeMap::new()),
             next_gid: AtomicU64::new(1),
@@ -444,6 +449,17 @@ impl Storage {
         }
     }
 
+    /// Reset (truncate) the WAL after a snapshot to prevent unbounded growth.
+    /// Calls `reset()` on the WAL appender which recreates the WAL file.
+    pub fn reset_wal(&self) {
+        if let Ok(ref mut guard) = self.wal.lock() {
+            if let Some(ref mut writer) = guard.as_mut() {
+                let _ = writer.sync();
+                let _ = writer.reset(); // Best-effort; WAL continues appending if reset fails
+            }
+        }
+    }
+
     /// Attach a trigger executor for firing trigger statements.
     pub fn set_trigger_executor(
         &self,
@@ -484,6 +500,13 @@ impl Storage {
                 IN_TRIGGER.with(|c| c.set(false));
             }
         }
+    }
+
+    fn store_delta(&self, delta: Box<CoreDelta>) -> *mut CoreDelta {
+        let ptr: *const CoreDelta = delta.as_ref();
+        let raw_ptr = ptr as *mut CoreDelta;
+        self.deltas.write().unwrap().insert(ptr as usize, delta);
+        raw_ptr
     }
 
     fn append_wal(&self, record: &WalRecord) {
@@ -531,7 +554,7 @@ impl Storage {
         let vertices = self.vertices.read().unwrap();
         vertices
             .get(&gid)
-            .map(|v| v.in_edges.iter().map(|t| t.edge.gid()).collect())
+            .map(|v| v.in_edges.iter().map(|e| e.value().edge.gid()).collect())
             .unwrap_or_default()
     }
 
@@ -540,7 +563,7 @@ impl Storage {
         let vertices = self.vertices.read().unwrap();
         vertices
             .get(&gid)
-            .map(|v| v.out_edges.iter().map(|t| t.edge.gid()).collect())
+            .map(|v| v.out_edges.iter().map(|e| e.value().edge.gid()).collect())
             .unwrap_or_default()
     }
 
@@ -667,46 +690,44 @@ impl Storage {
     /// This allows callers to pass the oldest active transaction timestamp
     /// explicitly, protecting deltas still needed by long-running transactions.
     pub fn gc_with_horizon(&self, oldest_active_tx: u64) -> usize {
-        let before = self.deltas.read().unwrap().len();
+        // Collect trimmed delta pointers during chain trimming (as usize for Send+Sync)
+        let trimmed_ptrs: std::collections::HashSet<usize> = {
+            let mut trimmed = std::collections::HashSet::new();
+            let vertices = self.vertices.read().unwrap();
+            for (_gid, vertex) in vertices.iter() {
+                let head = vertex.delta();
+                if head.is_null() {
+                    continue;
+                }
+                let new_head = unsafe { Self::trim_chain_collect(head, oldest_active_tx, &mut trimmed) };
+                if new_head != head {
+                    vertex.set_delta(new_head);
+                }
+            }
+            drop(vertices);
 
-        // Phase 1: unlink old deltas from chains
-        let vertices = self.vertices.read().unwrap();
-        for (_gid, vertex) in vertices.iter() {
-            let head = vertex.delta();
-            if head.is_null() {
-                continue;
+            let edges = self.edges.read().unwrap();
+            for (_gid, edge) in edges.iter() {
+                let head = edge.delta();
+                if head.is_null() {
+                    continue;
+                }
+                let new_head = unsafe { Self::trim_chain_collect(head, oldest_active_tx, &mut trimmed) };
+                if new_head != head {
+                    edge.set_delta(new_head);
+                }
             }
-            let new_head = unsafe { Self::trim_chain(head, oldest_active_tx) };
-            if new_head != head {
-                vertex.set_delta(new_head);
-            }
-        }
-        drop(vertices);
+            drop(edges);
+            trimmed
+        };
 
-        let edges = self.edges.read().unwrap();
-        for (_gid, edge) in edges.iter() {
-            let head = edge.delta();
-            if head.is_null() {
-                continue;
-            }
-            let new_head = unsafe { Self::trim_chain(head, oldest_active_tx) };
-            if new_head != head {
-                edge.set_delta(new_head);
-            }
-        }
-        drop(edges);
-
-        // Phase 2: delete unreachable deltas from global pool
+        // Phase 2: remove only trimmed deltas from the pool — O(trimmed), not O(total)
+        // HashMap allows direct removal by key (pointer).
         let mut deltas = self.deltas.write().unwrap();
-        deltas.retain(|d| {
-            let ts = d.commit_info.timestamp();
-            ts >= oldest_active_tx
-                || ts >= TRANSACTION_INITIAL_ID
-                || matches!(
-                    d.kind,
-                    DeltaKind::DeleteObject | DeltaKind::DeleteDeserializedObject { .. }
-                )
-        });
+        let before = deltas.len();
+        for ptr in trimmed_ptrs.iter() {
+            deltas.remove(ptr);
+        }
         let freed = before - deltas.len();
         self.metrics.inc_gc_deltas(freed as u64);
         let retained = deltas.len();
@@ -725,9 +746,12 @@ impl Storage {
     /// Walk from head (newest) to find the first delta that is NOT
     /// old (ts >= watermark or uncommitted or tail anchor). Everything
     /// between head and that delta is old and gets unlinked.
-    unsafe fn trim_chain(head: *mut CoreDelta, watermark: u64) -> *mut CoreDelta {
+    unsafe fn trim_chain_collect(
+        head: *mut CoreDelta,
+        watermark: u64,
+        trimmed: &mut std::collections::HashSet<usize>,
+    ) -> *mut CoreDelta {
         let mut current = head;
-        // Scan until we find a delta worth keeping
         while let Some(d) = current.as_ref() {
             let ts = d.commit_info.timestamp();
             let next = d.next.load(std::sync::atomic::Ordering::Acquire);
@@ -737,18 +761,16 @@ impl Storage {
                     DeltaKind::DeleteObject | DeltaKind::DeleteDeserializedObject { .. }
                 );
             if ts >= watermark || ts >= TRANSACTION_INITIAL_ID || is_tail {
-                break; // stop trimming — this one stays
+                break;
             }
-            // This delta is old. Move to next.
+            // This delta is trimmed — record its pointer
+            trimmed.insert(current as usize);
             if next.is_null() {
                 return std::ptr::null_mut();
-            } // entire chain gone
+            }
             current = next;
         }
-        // current now points to the first non-old delta (new head)
         if current != head {
-            // Check if the old segment we trimmed includes the tail anchor.
-            // If so, we can't fully unlink. Walk old segment to check.
             let mut check = head;
             let mut found_tail = false;
             while check != current {
@@ -766,12 +788,6 @@ impl Storage {
                 check = next;
             }
             if found_tail {
-                // Keep the tail anchor. Connect the new head's predecessor to the tail.
-                // But since we trimmed from head to new-head, the tail anchor is
-                // in the trimmed segment. We need to preserve it.
-                // Find the tail anchor and link it past the old deltas.
-                // Actually, if the tail anchor is in the trimmed segment, just
-                // keep the entire chain — can't trim past the tail anchor.
                 head
             } else {
                 current
@@ -829,15 +845,22 @@ impl Storage {
 
     /// Create a vertex. Returns the new vertex's Gid.
     pub fn create_vertex(&self, tx: &Transaction, gid: Gid) -> Result<Gid, StorageError> {
+        // Enforce vertex limit
+        if self.config.max_vertices > 0 {
+            let count = self.vertices.read().unwrap().len();
+            if count >= self.config.max_vertices {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "vertex limit reached ({} vertices)",
+                    count
+                )));
+            }
+        }
+
         tx.record_write(gid);
         let ci = tx.commit_info.clone();
         let cmd_id = tx.next_command_id();
         let delta = Box::new(CoreDelta::new_delete_object(ci, cmd_id));
-        let delta_ptr = Box::into_raw(delta);
-
-        // Store the delta
-        let delta_box = unsafe { Box::from_raw(delta_ptr) };
-        self.deltas.write().unwrap().push(delta_box);
+        let delta_ptr = self.store_delta(delta);
 
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -897,7 +920,9 @@ impl Storage {
             let cmd_id = tx.next_command_id();
             let delta = Box::new(CoreDelta::new_delete_object(ci.clone(), cmd_id));
             let delta_ptr = Box::into_raw(delta);
-            deltas.push(unsafe { Box::from_raw(delta_ptr) });
+            let delta_box = unsafe { Box::from_raw(delta_ptr) };
+            let key = delta_box.as_ref() as *const CoreDelta as usize;
+            deltas.insert(key, delta_box);
 
             let vertex = Box::new(Vertex::new(*gid, delta_ptr, now_ms));
 
@@ -1084,11 +1109,7 @@ impl Storage {
             ci,
             cmd_id,
         ));
-        let delta_ptr = Box::into_raw(delta);
-        self.deltas
-            .write()
-            .unwrap()
-            .push(unsafe { Box::from_raw(delta_ptr) });
+        let delta_ptr = self.store_delta(delta);
 
         // Link delta into chain (newest first)
         unsafe {
@@ -1214,12 +1235,7 @@ impl Storage {
         let ci = tx.commit_info.clone();
         let cmd_id = tx.next_command_id();
         let delta = Box::new(CoreDelta::new_add_label(label, ci, cmd_id));
-        let delta_ptr = Box::into_raw(delta);
-
-        self.deltas
-            .write()
-            .unwrap()
-            .push(unsafe { Box::from_raw(delta_ptr) });
+        let delta_ptr = self.store_delta(delta);
 
         let mut vertices = self.vertices.write().unwrap();
         let vertex = vertices
@@ -1534,16 +1550,22 @@ impl Storage {
         to_vertex: Gid,
         edge_type: EdgeTypeId,
     ) -> Result<Gid, StorageError> {
+        // Enforce edge limit
+        if self.config.max_edges > 0 {
+            let count = self.edges.read().unwrap().len();
+            if count >= self.config.max_edges {
+                return Err(StorageError::ConstraintViolation(format!(
+                    "edge limit reached ({} edges)",
+                    count
+                )));
+            }
+        }
+
         tx.record_write(gid);
         let ci = tx.commit_info.clone();
         let cmd_id = tx.next_command_id();
         let delta = Box::new(CoreDelta::new_delete_object(ci, cmd_id));
-        let delta_ptr = Box::into_raw(delta);
-
-        self.deltas
-            .write()
-            .unwrap()
-            .push(unsafe { Box::from_raw(delta_ptr) });
+        let delta_ptr = self.store_delta(delta);
 
         let edge = Box::new(Edge::new(gid, delta_ptr));
 
@@ -1559,14 +1581,14 @@ impl Storage {
         let to_ptr: *const Vertex = &*vertices[&to_vertex];
         let from_ptr: *const Vertex = &*vertices[&from_vertex];
         if let Some(from_v) = vertices.get_mut(&from_vertex) {
-            from_v.out_edges.push(EdgeTriple {
+            from_v.out_edges.insert((edge_type, gid), EdgeTriple {
                 edge_type,
                 vertex: unsafe { std::ptr::NonNull::new_unchecked(to_ptr as *mut _) },
                 edge: EdgeRef::from_gid(gid),
             });
         }
         if let Some(to_v) = vertices.get_mut(&to_vertex) {
-            to_v.in_edges.push(EdgeTriple {
+            to_v.in_edges.insert((edge_type, gid), EdgeTriple {
                 edge_type,
                 vertex: unsafe { std::ptr::NonNull::new_unchecked(from_ptr as *mut _) },
                 edge: EdgeRef::from_gid(gid),
@@ -1633,7 +1655,9 @@ impl Storage {
             let cmd_id = tx.next_command_id();
             let delta = Box::new(CoreDelta::new_delete_object(ci.clone(), cmd_id));
             let delta_ptr = Box::into_raw(delta);
-            deltas.push(unsafe { Box::from_raw(delta_ptr) });
+            let delta_box = unsafe { Box::from_raw(delta_ptr) };
+            let key = delta_box.as_ref() as *const CoreDelta as usize;
+            deltas.insert(key, delta_box);
 
             let edge = Box::new(Edge::new(*gid, delta_ptr));
             edges.insert(*gid, edge);
@@ -1641,14 +1665,14 @@ impl Storage {
             let to_ptr: *const Vertex = &*vertices[to_vertex];
             let from_ptr: *const Vertex = &*vertices[from_vertex];
             if let Some(from_v) = vertices.get_mut(from_vertex) {
-                from_v.out_edges.push(EdgeTriple {
+                from_v.out_edges.insert((*edge_type, *gid), EdgeTriple {
                     edge_type: *edge_type,
                     vertex: unsafe { std::ptr::NonNull::new_unchecked(to_ptr as *mut _) },
                     edge: EdgeRef::from_gid(*gid),
                 });
             }
             if let Some(to_v) = vertices.get_mut(to_vertex) {
-                to_v.in_edges.push(EdgeTriple {
+                to_v.in_edges.insert((*edge_type, *gid), EdgeTriple {
                     edge_type: *edge_type,
                     vertex: unsafe { std::ptr::NonNull::new_unchecked(from_ptr as *mut _) },
                     edge: EdgeRef::from_gid(*gid),
@@ -1756,12 +1780,7 @@ impl Storage {
         let ci = tx.commit_info.clone();
         let cmd_id = tx.next_command_id();
         let delta = Box::new(CoreDelta::new_remove_label(label, ci, cmd_id));
-        let delta_ptr = Box::into_raw(delta);
-
-        self.deltas
-            .write()
-            .unwrap()
-            .push(unsafe { Box::from_raw(delta_ptr) });
+        let delta_ptr = self.store_delta(delta);
 
         let mut vertices = self.vertices.write().unwrap();
         let vertex = vertices
@@ -1843,6 +1862,14 @@ impl Storage {
         key: PropertyId,
         value: PropertyValue,
     ) -> Result<(), StorageError> {
+        // Single edge_index lookup for constraint check + cached edge_type
+        let edge_type = self.edge_index.get(&gid).map(|e| e.edge_type);
+        if let Some(et) = edge_type {
+            if let Err(e) = self.constraints.check_edge_type(et, key, &value) {
+                return Err(StorageError::ConstraintViolation(format!("{:?}", e)));
+            }
+        }
+
         tx.record_write(gid);
         let mut edges = self.edges.write().unwrap();
         let edge = edges.get_mut(&gid).ok_or(StorageError::EdgeNotFound(gid))?;
@@ -1851,11 +1878,7 @@ impl Storage {
         let ci = tx.commit_info.clone();
         let cmd_id = tx.next_command_id();
         let delta = Box::new(CoreDelta::new_set_property(key, old_value, ci, cmd_id));
-        let delta_ptr = Box::into_raw(delta);
-        self.deltas
-            .write()
-            .unwrap()
-            .push(unsafe { Box::from_raw(delta_ptr) });
+        let delta_ptr = self.store_delta(delta);
 
         unsafe {
             (*delta_ptr)
@@ -1868,10 +1891,9 @@ impl Storage {
         if !old_val_clone.is_null() {
             self.edge_property_index.remove(key, gid);
         }
-        let entry_for_ek = self.edge_index.get(&gid);
         if !old_val_clone.is_null() {
-            if let Some(ref entry) = entry_for_ek {
-                let ek = mgcore::types::EdgeTypePropKey::new(entry.edge_type, key);
+            if let Some(et) = edge_type {
+                let ek = mgcore::types::EdgeTypePropKey::new(et, key);
                 self.edge_type_property_index.remove(ek, gid);
             }
         }
@@ -1879,9 +1901,9 @@ impl Storage {
         if !value.is_null() {
             self.edge_property_index.add(key, gid, value.clone());
         }
-        if let Some(ref entry) = entry_for_ek {
+        if let Some(et) = edge_type {
             if !value.is_null() {
-                let ek = mgcore::types::EdgeTypePropKey::new(entry.edge_type, key);
+                let ek = mgcore::types::EdgeTypePropKey::new(et, key);
                 self.edge_type_property_index.add(ek, gid, value.clone());
             }
         }
@@ -1897,8 +1919,8 @@ impl Storage {
         }
 
         // Schema info
-        if let Some(entry) = self.edge_index.get(&gid) {
-            self.schema_info.record_edge_property(entry.edge_type, key);
+        if let Some(et) = edge_type {
+            self.schema_info.record_edge_property(et, key);
         }
 
         drop(edges);
@@ -2077,6 +2099,10 @@ impl Storage {
     /// Delete an edge — marks deleted and cleans up from edge type index and global index.
     pub fn delete_edge(&self, tx: &Transaction, gid: Gid) -> Result<(), StorageError> {
         tx.record_write(gid);
+
+        // Get edge endpoints from index before removing
+        let endpoints = self.edge_index.get(&gid).map(|e| (e.from_vertex, e.to_vertex, e.edge_type));
+
         let edges = self.edges.write().unwrap();
         let edge = edges.get(&gid).ok_or(StorageError::EdgeNotFound(gid))?;
         // Clean up indices before marking deleted
@@ -2103,6 +2129,18 @@ impl Storage {
         }
 
         drop(edges);
+
+        // Remove EdgeTriple from source/target adjacency lists
+        if let Some((from_gid, to_gid, etype)) = endpoints {
+            let mut vertices = self.vertices.write().unwrap();
+            if let Some(from_v) = vertices.get_mut(&from_gid) {
+                from_v.out_edges.remove(&(etype, gid));
+            }
+            if let Some(to_v) = vertices.get_mut(&to_gid) {
+                to_v.in_edges.remove(&(etype, gid));
+            }
+        }
+
         self.append_wal(&WalRecord::EdgeDelete { gid });
 
         self.fire_triggers(crate::triggers::TriggerEvent::EdgeDelete, None, gid);
@@ -2300,15 +2338,31 @@ impl Storage {
         let Some(v) = vertices.get(&gid) else {
             return vec![];
         };
-        v.in_edges
-            .iter()
-            .filter(|triple| edge_type.is_none_or(|et| triple.edge_type == et))
-            .map(|triple| {
-                let edge_gid = triple.edge.gid();
-                let other = unsafe { (*triple.vertex.as_ptr()).gid };
-                (edge_gid, other, triple.edge_type)
-            })
-            .collect()
+        match edge_type {
+            Some(et) => {
+                // Use skip list range for O(log deg) edge-type filtering
+                let start = (et, Gid::from(0u64));
+                let end = (EdgeTypeId::from(u32::from(et) + 1), Gid::from(0u64));
+                v.in_edges
+                    .range(start..end)
+                    .map(|entry| {
+                        let triple = entry.value();
+                        let edge_gid = triple.edge.gid();
+                        let other = unsafe { (*triple.vertex.as_ptr()).gid };
+                        (edge_gid, other, triple.edge_type)
+                    })
+                    .collect()
+            }
+            None => v.in_edges
+                .iter()
+                .map(|entry| {
+                    let triple = entry.value();
+                    let edge_gid = triple.edge.gid();
+                    let other = unsafe { (*triple.vertex.as_ptr()).gid };
+                    (edge_gid, other, triple.edge_type)
+                })
+                .collect(),
+        }
     }
 
     /// Get outgoing edges for a vertex, optionally filtered by edge type.
@@ -2321,15 +2375,30 @@ impl Storage {
         let Some(v) = vertices.get(&gid) else {
             return vec![];
         };
-        v.out_edges
-            .iter()
-            .filter(|triple| edge_type.is_none_or(|et| triple.edge_type == et))
-            .map(|triple| {
-                let edge_gid = triple.edge.gid();
-                let other = unsafe { (*triple.vertex.as_ptr()).gid };
-                (edge_gid, other, triple.edge_type)
-            })
-            .collect()
+        match edge_type {
+            Some(et) => {
+                let start = (et, Gid::from(0u64));
+                let end = (EdgeTypeId::from(u32::from(et) + 1), Gid::from(0u64));
+                v.out_edges
+                    .range(start..end)
+                    .map(|entry| {
+                        let triple = entry.value();
+                        let edge_gid = triple.edge.gid();
+                        let other = unsafe { (*triple.vertex.as_ptr()).gid };
+                        (edge_gid, other, triple.edge_type)
+                    })
+                    .collect()
+            }
+            None => v.out_edges
+                .iter()
+                .map(|entry| {
+                    let triple = entry.value();
+                    let edge_gid = triple.edge.gid();
+                    let other = unsafe { (*triple.vertex.as_ptr()).gid };
+                    (edge_gid, other, triple.edge_type)
+                })
+                .collect(),
+        }
     }
 
     /// Find vertices with out-degree in a given range (inclusive).
@@ -2460,7 +2529,7 @@ impl Storage {
     }
 
     pub fn edge_type_count(&self, etype: EdgeTypeId) -> usize {
-        self.edge_type_index.edges_by_type(etype).len()
+        self.edge_type_index.count_by_type(etype)
     }
 
     // ─── Property removal ──────────────────────────────────────────────
@@ -2500,8 +2569,8 @@ impl Storage {
             if let Some(v) = vertices.get(&gid) {
                 v.in_edges
                     .iter()
-                    .chain(v.out_edges.iter())
-                    .map(|t| t.edge.gid())
+                    .map(|e| e.value().edge.gid())
+                    .chain(v.out_edges.iter().map(|e| e.value().edge.gid()))
                     .collect()
             } else {
                 return Err(StorageError::VertexNotFound(gid));
@@ -2783,6 +2852,7 @@ pub enum StorageError {
     EdgeExists(Gid),
     EdgeNotFound(Gid),
     ConstraintViolation(String),
+    SnapshotNotFound(String),
 }
 
 impl std::fmt::Display for StorageError {
@@ -2793,6 +2863,7 @@ impl std::fmt::Display for StorageError {
             StorageError::EdgeExists(gid) => write!(f, "edge already exists: {}", gid),
             StorageError::EdgeNotFound(gid) => write!(f, "edge not found: {}", gid),
             StorageError::ConstraintViolation(msg) => write!(f, "constraint violation: {}", msg),
+            StorageError::SnapshotNotFound(id) => write!(f, "snapshot not found: {}", id),
         }
     }
 }
@@ -4863,5 +4934,107 @@ mod tests {
             "final value ({}) should equal successful commits ({})",
             final_val, total_ok
         );
+    }
+
+    #[test]
+    fn test_edge_deletion_removes_adjacency() {
+        let storage = Storage::new();
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+
+        let v1 = storage.create_vertex(&tx, Gid::from(1u64)).unwrap();
+        let v2 = storage.create_vertex(&tx, Gid::from(2u64)).unwrap();
+        let etype = EdgeTypeId::from(0u32);
+        let e1 = storage
+            .create_edge(&tx, Gid::from(10u64), v1, v2, etype)
+            .unwrap();
+        let e2 = storage
+            .create_edge(&tx, Gid::from(11u64), v1, v2, etype)
+            .unwrap();
+        assert!(storage.commit_transaction(&tx));
+
+        // Both edges present
+        assert_eq!(storage.vertex_out_degree(v1), 2);
+        assert_eq!(storage.vertex_in_degree(v2), 2);
+
+        // Delete one edge
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+        storage.delete_edge(&tx, e1).unwrap();
+        assert!(storage.commit_transaction(&tx));
+
+        // Adjacency should now reflect only e2
+        assert_eq!(
+            storage.vertex_out_degree(v1),
+            1,
+            "out_edges should have 1 entry after deleting one of two edges"
+        );
+        assert_eq!(
+            storage.vertex_in_degree(v2),
+            1,
+            "in_edges should have 1 entry after deleting one of two edges"
+        );
+
+        // Remaining edge is e2
+        let out_edges = storage.vertex_out_edges(v1, None);
+        assert_eq!(out_edges.len(), 1);
+        assert_eq!(out_edges[0].0, e2);
+
+        // Delete remaining edge
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+        storage.delete_edge(&tx, e2).unwrap();
+        assert!(storage.commit_transaction(&tx));
+
+        assert_eq!(
+            storage.vertex_out_degree(v1),
+            0,
+            "out_edges should be empty after deleting all edges"
+        );
+        assert_eq!(
+            storage.vertex_in_degree(v2),
+            0,
+            "in_edges should be empty after deleting all edges"
+        );
+    }
+
+    #[test]
+    fn test_vertex_limit_enforced() {
+        let mut config = StorageConfig::new();
+        config.max_vertices = 2;
+        let storage = Storage::with_config(config);
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+
+        assert!(storage.create_vertex(&tx, Gid::from(1u64)).is_ok());
+        assert!(storage.create_vertex(&tx, Gid::from(2u64)).is_ok());
+        let result = storage.create_vertex(&tx, Gid::from(3u64));
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StorageError::ConstraintViolation(msg) => {
+                assert!(msg.contains("vertex limit"));
+            }
+            other => panic!("expected ConstraintViolation, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_edge_limit_enforced() {
+        let mut config = StorageConfig::new();
+        config.max_edges = 1;
+        let storage = Storage::with_config(config);
+        let tx = storage.begin_transaction(IsolationLevel::SnapshotIsolation);
+
+        let v1 = storage.create_vertex(&tx, Gid::from(1u64)).unwrap();
+        let v2 = storage.create_vertex(&tx, Gid::from(2u64)).unwrap();
+        let etype = EdgeTypeId::from(0u32);
+
+        assert!(storage
+            .create_edge(&tx, Gid::from(10u64), v1, v2, etype)
+            .is_ok());
+        let result = storage.create_edge(&tx, Gid::from(11u64), v1, v2, etype);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StorageError::ConstraintViolation(msg) => {
+                assert!(msg.contains("edge limit"));
+            }
+            other => panic!("expected ConstraintViolation, got {:?}", other),
+        }
     }
 }

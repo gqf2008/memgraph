@@ -8,5 +8,6 @@ repository.workspace = true
 [dependencies]
 mgslk = { path = "../mgslk" }
 serde = { workspace = true }
+crossbeam-skiplist = "0.1"
 
 [dev-dependencies]

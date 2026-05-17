@@ -69,6 +69,7 @@ use mgbolt::message::Message;
 use mgbolt::value::{Value, SIG_NODE, SIG_RELATIONSHIP};
 use mgcatalog::Catalog;
 use mgcore::property_value::PropertyValue;
+use mgdbms::DbmsHandler;
 use mginterp::{execute_with_catalog_auth_dbms_and_params_timeout, set_active_transaction};
 use mgstorage::storage::Storage;
 
@@ -259,6 +260,11 @@ struct ConnectionState {
     in_transaction: bool,
     active_query_id: Option<u64>,
     explicit_tx: Option<Arc<mgstorage::transaction::Transaction>>,
+    username: Option<String>,
+    /// Last committed bookmark (Bolt 5.x causal consistency).
+    last_bookmark: Option<String>,
+    /// Current database context (for multi-database support).
+    current_db: String,
 }
 
 impl ConnectionState {
@@ -270,6 +276,9 @@ impl ConnectionState {
             in_transaction: false,
             active_query_id: None,
             explicit_tx: None,
+            username: None,
+            last_bookmark: None,
+            current_db: "default".to_string(),
         }
     }
 
@@ -280,6 +289,7 @@ impl ConnectionState {
         self.in_transaction = false;
         self.active_query_id = None;
         self.explicit_tx = None;
+        self.last_bookmark = None;
     }
 
     fn clear_streaming(&mut self) {
@@ -301,6 +311,7 @@ pub async fn run(
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
+    dbms: Arc<mgdbms::DbmsHandler>,
     tls_acceptor: Option<Arc<tokio_rustls::TlsAcceptor>>,
     cluster_state: Arc<mgcoord::ClusterState>,
     port: u16,
@@ -337,6 +348,7 @@ pub async fn run(
                 let auth = auth.clone();
                 let admin = admin.clone();
                 let query_cache = query_cache.clone();
+                let dbms = dbms.clone();
                 let tls = tls_acceptor.clone();
                 let cluster = cluster_state.clone();
                 tokio::spawn(async move {
@@ -345,14 +357,14 @@ pub async fn run(
                         match acceptor.accept(stream).await {
                             Ok(tls_stream) => {
                                 tracing::info!("[bolt] TLS handshake completed for {}", peer);
-                                handle_connection(storage, catalog, auth, admin, query_cache, cluster, BoltStream::Tls(tls_stream), peer).await;
+                                handle_connection(storage, catalog, auth, admin, query_cache, dbms, cluster, BoltStream::Tls(tls_stream), peer).await;
                             }
                             Err(e) => {
                                 tracing::warn!("[bolt] TLS handshake failed for {}: {}", peer, e);
                             }
                         }
                     } else {
-                        handle_connection(storage, catalog, auth, admin, query_cache, cluster, BoltStream::Plain(stream), peer).await;
+                        handle_connection(storage, catalog, auth, admin, query_cache, dbms, cluster, BoltStream::Plain(stream), peer).await;
                     }
                 });
             }
@@ -369,6 +381,7 @@ async fn handle_connection(
     auth: Arc<AuthConfig>,
     admin: Arc<AdminState>,
     query_cache: Arc<crate::query_cache::QueryCache>,
+    dbms: Arc<DbmsHandler>,
     cluster_state: Arc<mgcoord::ClusterState>,
     mut stream: BoltStream,
     peer: std::net::SocketAddr,
@@ -575,6 +588,7 @@ async fn handle_connection(
                             None
                         }
                     });
+                    conn.username = user_str.clone();
                     let cid = admin.register_connection(
                         peer_str.clone(),
                         user_str,
@@ -673,6 +687,13 @@ async fn handle_connection(
                     ((version >> 8) as u8, (version & 0xFF) as u8),
                 );
                 conn_id = Some(cid);
+                conn.username = extra.get("principal").and_then(|v| {
+                    if let Value::String(s) = v {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
                 conn.state = BoltState::Authenticated;
                 if send_message(
                     &mut stream,
@@ -688,6 +709,7 @@ async fn handle_connection(
             }
             Message::Logoff => {
                 tracing::info!("[bolt] LOGOFF from {}", peer_str);
+                conn.username = None;
                 conn.state = BoltState::Authentication;
                 if send_message(
                     &mut stream,
@@ -708,6 +730,41 @@ async fn handle_connection(
                 ..
             } => {
                 tracing::debug!("[bolt] RUN: {}", query);
+
+                // Handle :USE database switching command (cheap byte check first — hot path)
+                if query.as_bytes().first() == Some(&b':') {
+                    if let Some(db_name) = query.strip_prefix(":USE ").or_else(|| query.strip_prefix(":use ")) {
+                        let db_name = db_name.trim().trim_matches('`').trim_matches('"');
+                        if dbms.exists(&db_name.to_string()) {
+                            conn.current_db = db_name.to_string();
+                            let mut meta = HashMap::new();
+                            meta.insert("db".into(), Value::String(conn.current_db.clone()));
+                            if send_message(&mut stream, &Message::Success { metadata: meta }).await.is_err() {
+                                break;
+                            }
+                        } else {
+                            send_failure(&mut stream, "Database.Error", &format!("database '{}' not found", db_name)).await;
+                            conn.state = BoltState::Failed;
+                        }
+                        continue;
+                    }
+                }
+
+                // Reject new queries when memory pressure is critical
+                if admin.is_memory_critical() {
+                    send_failure(
+                        &mut stream,
+                        "Memgraph.ClientError.MemoryLimitExceeded",
+                        "Memory limit exceeded — server is under critical memory pressure.",
+                    )
+                    .await;
+                    if let Some(cid) = conn_id {
+                        admin.fail_query(cid);
+                    }
+                    conn.state = BoltState::Failed;
+                    continue;
+                }
+
                 let qid = conn_id.map(|cid| admin.start_query(cid, query.clone()));
                 let params: HashMap<String, PropertyValue> = parameters
                     .iter()
@@ -736,8 +793,8 @@ async fn handle_connection(
                         query,
                         Some(&catalog),
                         &params,
-                        None,
-                        None,
+                        Some(auth.auth_store()),
+                        Some(&dbms),
                         timeout,
                     )
                 };
@@ -755,6 +812,10 @@ async fn handle_connection(
                             ),
                         );
                         meta.insert("t_first".into(), Value::Int(0));
+                        // Generate bookmark for causal consistency
+                        let bookmark = next_bookmark();
+                        conn.last_bookmark = Some(bookmark.clone());
+                        meta.insert("bookmark".into(), Value::String(bookmark));
                         conn.pending_result = Some(result);
                         conn.result_iter = Some(0);
                         conn.active_query_id = qid;
@@ -920,6 +981,9 @@ async fn handle_connection(
                     conn.state = BoltState::Ready;
                     let mut meta = HashMap::new();
                     meta.insert("type".into(), Value::String("w".into()));
+                    if let Some(ref bm) = conn.last_bookmark {
+                        meta.insert("bookmark".into(), Value::String(bm.clone()));
+                    }
                     if send_message(&mut stream, &Message::Success { metadata: meta })
                         .await
                         .is_err()
@@ -1045,6 +1109,14 @@ async fn write_message(stream: &mut BoltStream, payload: &[u8]) -> std::io::Resu
     }
     stream.write_all(&[0x00, 0x00]).await?;
     stream.flush().await
+}
+
+/// Generate the next unique bookmark for causal consistency.
+fn next_bookmark() -> String {
+    use std::sync::atomic::AtomicU64;
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    format!("bm:{}", seq)
 }
 
 async fn send_message(stream: &mut BoltStream, msg: &Message) -> std::io::Result<()> {

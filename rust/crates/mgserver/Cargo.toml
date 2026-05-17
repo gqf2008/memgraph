@@ -22,6 +22,7 @@ mgglue = { path = "../mgglue" }
 mgsystem = { path = "../mgsystem" }
 mgdbms = { path = "../mgdbms" }
 mgauth = { path = "../mgauth" }
+mgprocedure = { path = "../mgprocedure" }
 mgtelemetry = { path = "../mgtelemetry" }
 mgaudit = { path = "../mgaudit" }
 mgrepl = { path = "../mgrepl" }
@@ -43,6 +44,8 @@ http-body = { workspace = true }
 bytes = { workspace = true }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+rustls = "0.23"
+rustls-pki-types = "1"
 arrow = { version = "58", optional = true }
 parquet = { version = "58", optional = true }
 

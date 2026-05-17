@@ -1,4 +1,4 @@
-//! Legacy readers for C++ Memgraph snapshot/WAL format (versions 14-34).
+//! Legacy readers for C++ Memgraph snapshot/WAL format (versions 14-35).
 //!
 //! C++ format uses marker-based encoding where each value is prefixed
 //! by a single-byte `Marker` identifying the type, followed by the data.
@@ -20,14 +20,14 @@ use mgcore::types::{EdgeTypeId, Gid, LabelId, PropertyId};
 
 /// Detect the C++ format version from a file path.
 ///
-/// Returns `Some(version)` for legacy C++ files (versions 14-34),
+/// Returns `Some(version)` for legacy C++ files (versions 14-35),
 /// or `None` if the file is not a recognized legacy format
 /// (including current Rust format, unknown versions, or I/O errors).
 pub fn detect_format_version(path: impl AsRef<Path>) -> Option<u16> {
     let data = std::fs::read(path.as_ref()).ok()?;
     let format = crate::version::detect_format(&data).ok()?;
     match format {
-        crate::version::FormatKind::LegacyCpp(v) if (14..=34).contains(&v) => Some(v as u16),
+        crate::version::FormatKind::LegacyCpp(v) if mgslk::is_cpp_version(v) => Some(v as u16),
         _ => None,
     }
 }
@@ -218,6 +218,35 @@ mod legacy_delta {
     pub const V20_EXISTENCE_CONSTRAINT_DROP: u8 = 0x5e;
     pub const V20_UNIQUE_CONSTRAINT_CREATE: u8 = 0x5f;
     pub const V20_UNIQUE_CONSTRAINT_DROP: u8 = 0x60;
+
+    // v35+ additional delta tags — treated as metadata operations.
+    pub const V35_LABEL_INDEX_STATS_SET: u8 = 0x61;
+    pub const V35_LABEL_INDEX_STATS_CLEAR: u8 = 0x62;
+    pub const V35_LABEL_PROPERTIES_INDEX_STATS_SET: u8 = 0x63;
+    pub const V35_LABEL_PROPERTIES_INDEX_STATS_CLEAR: u8 = 0x64;
+    pub const V35_EDGE_INDEX_CREATE: u8 = 0x65;
+    pub const V35_EDGE_INDEX_DROP: u8 = 0x66;
+    pub const V35_TEXT_INDEX_CREATE: u8 = 0x67;
+    pub const V35_TEXT_INDEX_DROP: u8 = 0x68;
+    pub const V35_ENUM_CREATE: u8 = 0x69;
+    pub const V35_ENUM_ALTER_ADD: u8 = 0x6a;
+    pub const V35_ENUM_ALTER_UPDATE: u8 = 0x6b;
+    pub const V35_EDGE_PROPERTY_INDEX_CREATE: u8 = 0x6c;
+    pub const V35_EDGE_PROPERTY_INDEX_DROP: u8 = 0x6d;
+    pub const V35_POINT_INDEX_CREATE: u8 = 0x6e;
+    pub const V35_POINT_INDEX_DROP: u8 = 0x6f;
+    pub const V35_TYPE_CONSTRAINT_CREATE: u8 = 0x70;
+    pub const V35_TYPE_CONSTRAINT_DROP: u8 = 0x71;
+    pub const V35_VECTOR_INDEX_CREATE: u8 = 0x72;
+    pub const V35_VECTOR_INDEX_DROP: u8 = 0x73;
+    pub const V35_GLOBAL_EDGE_PROPERTY_INDEX_CREATE: u8 = 0x74;
+    pub const V35_GLOBAL_EDGE_PROPERTY_INDEX_DROP: u8 = 0x75;
+    pub const V35_VECTOR_EDGE_INDEX_CREATE: u8 = 0x76;
+    pub const V35_TRANSACTION_START: u8 = 0x77;
+    pub const V35_TTL_OPERATION: u8 = 0x78;
+    pub const V35_TEXT_EDGE_INDEX_CREATE: u8 = 0x79;
+    pub const V35_DESCRIPTION_SET: u8 = 0x7a;
+    pub const V35_DESCRIPTION_DELETE: u8 = 0x7b;
 }
 
 /// Error returned by C++ format parsing.
@@ -609,7 +638,7 @@ impl SectionOffsets {
 fn read_enum_mappings(
     reader: &mut CppReader<'_>,
 ) -> Result<HashMap<u64, (String, HashMap<u64, String>)>, CppFormatError> {
-    let count = reader.read_u64_le()? as usize;
+    let count = reader.read_tagged_u64()? as usize;
     let mut mappings = HashMap::with_capacity(count);
     for type_id in 0..count as u64 {
         let type_name = reader.read_string()?;
@@ -626,7 +655,7 @@ fn read_enum_mappings(
 
 // ─── LegacySnapshotReader ──────────────────────────────────────────────────
 
-/// Reads C++ v14-v34 snapshot files and converts them to [`SnapshotData`].
+/// Reads C++ v14-v35 snapshot files and converts them to [`SnapshotData`].
 pub struct LegacySnapshotReader;
 
 impl LegacySnapshotReader {
@@ -635,7 +664,7 @@ impl LegacySnapshotReader {
         if data.len() < 12 {
             return Err(CppFormatError::Corrupt("too short".into()));
         }
-        if !(14..=34).contains(&version) {
+        if !mgslk::is_cpp_version(version) {
             return Err(CppFormatError::UnsupportedVersion(version));
         }
 
@@ -651,10 +680,15 @@ impl LegacySnapshotReader {
         };
 
         // Try to read enum mappings first (needed for TYPE_ENUM property values).
+        // v35+ stores absolute file positions; earlier versions store offsets
+        // relative to the end of the 12-byte header.
+        let abs_offset = |off: u64| -> usize {
+            if version >= 35 { off as usize } else { 12 + off as usize }
+        };
         let mut enum_mappings: HashMap<u64, (String, HashMap<u64, String>)> = HashMap::new();
         if let Some(ref off) = offsets {
-            if off.enums > 0 && (12 + off.enums as usize) < data.len() {
-                let mut er = CppReader::new(&data[12 + off.enums as usize..]);
+            if off.enums > 0 && abs_offset(off.enums) < data.len() {
+                let mut er = CppReader::new(&data[abs_offset(off.enums)..]);
                 let _ = er.read_byte()?; // SECTION_ENUMS marker
                 enum_mappings = read_enum_mappings(&mut er)?;
             }
@@ -662,10 +696,11 @@ impl LegacySnapshotReader {
 
         // Helper to read vertices at a given offset.
         let read_vertices = |offset: u64| -> Result<Vec<VertexSnapshotEntry>, CppFormatError> {
-            if offset == 0 || (12 + offset as usize) >= data.len() {
+            let pos = abs_offset(offset);
+            if offset == 0 || pos >= data.len() {
                 return Ok(Vec::new());
             }
-            let mut r = CppReader::new(&data[12 + offset as usize..]);
+            let mut r = CppReader::new(&data[pos..]);
             r.enum_mappings = enum_mappings.clone();
             let _ = r.read_byte()?; // SECTION_VERTEX marker
             let count = r.read_u64_le()? as usize;
@@ -695,10 +730,11 @@ impl LegacySnapshotReader {
 
         // Helper to read edges at a given offset.
         let read_edges = |offset: u64| -> Result<Vec<EdgeSnapshotEntry>, CppFormatError> {
-            if offset == 0 || (12 + offset as usize) >= data.len() {
+            let pos = abs_offset(offset);
+            if offset == 0 || pos >= data.len() {
                 return Ok(Vec::new());
             }
-            let mut r = CppReader::new(&data[12 + offset as usize..]);
+            let mut r = CppReader::new(&data[pos..]);
             r.enum_mappings = enum_mappings.clone();
             let _ = r.read_byte()?; // SECTION_EDGE marker
             let count = r.read_u64_le()? as usize;
@@ -766,9 +802,21 @@ impl LegacySnapshotReader {
         };
 
         let (vertices, edges, name_mapper) = if let Some(ref off) = offsets {
+            let mut vertices = read_vertices(off.vertices)?;
+            let mut edges = read_edges(off.edges)?;
+            // v15+ supports batched vertex/edge sections for large snapshots.
+            // The main section may be empty; batch sections contain the data.
+            if off.vertex_batches > 0 {
+                let mut batched = read_vertices(off.vertex_batches)?;
+                vertices.append(&mut batched);
+            }
+            if off.edge_batches > 0 {
+                let mut batched = read_edges(off.edge_batches)?;
+                edges.append(&mut batched);
+            }
             (
-                read_vertices(off.vertices)?,
-                read_edges(off.edges)?,
+                vertices,
+                edges,
                 read_mapper(off.mapper)?,
             )
         } else {
@@ -887,7 +935,7 @@ impl LegacySnapshotReader {
 
 // ─── LegacyWalReader ───────────────────────────────────────────────────────
 
-/// Reads C++ v14-v34 WAL files and converts records to [`DeltaRecord`].
+/// Reads C++ v14-v35 WAL files and converts records to [`DeltaRecord`].
 pub struct LegacyWalReader;
 
 impl LegacyWalReader {
@@ -896,21 +944,60 @@ impl LegacyWalReader {
         if data.len() < 12 {
             return Err(CppFormatError::Corrupt("too short".into()));
         }
-        if !(14..=34).contains(&version) {
+        if !mgslk::is_cpp_version(version) {
             return Err(CppFormatError::UnsupportedVersion(version));
         }
 
-        let mut reader = CppReader::new(&data[12..]);
+        // v35+ WAL files begin with SECTION_OFFSETS pointing to metadata
+        // and delta sections. Earlier versions have deltas starting
+        // immediately after the 12-byte header.
+        let start_offset: usize = if version >= 35 {
+            let mut header = CppReader::new(&data[12..]);
+            if header.remaining() > 0 && header.peek_byte()? == marker::SECTION_OFFSETS {
+                let _ = header.read_byte()?; // consume SECTION_OFFSETS marker
+                let _offset_metadata = header.read_tagged_u64()?;
+                let offset_deltas = header.read_tagged_u64()? as usize;
+                // Offset is absolute within the file and must be >= 12 (past header)
+                offset_deltas
+            } else {
+                12
+            }
+        } else {
+            12
+        };
+
+        let mut reader = CppReader::new(&data[start_offset..]);
         let mut records = Vec::new();
 
-        while reader.remaining() > 0 {
-            // C++ WAL format: each record starts with a delta marker byte
-            let tag = match reader.read_byte() {
-                Ok(t) => t,
-                Err(_) => break,
-            };
-            let record = Self::decode_record(&mut reader, tag, version)?;
-            records.push(record);
+        // v35+ wraps delta records in SECTION_DELTA sections.
+        // Each SECTION_DELTA: marker(0x26) + tagged_u64(timestamp) + deltas...
+        // Deltas within a SECTION_DELTA are read sequentially until the
+        // next SECTION_DELTA marker or end of data.
+        if version >= 35 {
+            while reader.remaining() > 0 && reader.peek_byte()? == marker::SECTION_DELTA {
+                let _ = reader.read_byte()?; // consume SECTION_DELTA marker
+                let _ = reader.read_tagged_u64()?; // timestamp (ignored during recovery)
+                // Read deltas until next SECTION_DELTA or EOF
+                while reader.remaining() > 0 {
+                    match reader.peek_byte()? {
+                        0x26 => break, // next SECTION_DELTA block
+                        _ => {
+                            let tag = reader.read_byte()?;
+                            let record = Self::decode_record(&mut reader, tag, version)?;
+                            records.push(record);
+                        }
+                    }
+                }
+            }
+        } else {
+            while reader.remaining() > 0 {
+                let tag = match reader.read_byte() {
+                    Ok(t) => t,
+                    Err(_) => break,
+                };
+                let record = Self::decode_record(&mut reader, tag, version)?;
+                records.push(record);
+            }
         }
 
         Ok(records)
@@ -1026,6 +1113,76 @@ impl LegacyWalReader {
                     properties.push(PropertyId::from(reader.read_u64_le()? as u32));
                 }
                 Ok(DeltaRecord::UniqueConstraintDrop { label, properties })
+            }
+            // ─── v35+ metadata delta tags ─────────────────────────────────
+            legacy_delta::V35_LABEL_INDEX_STATS_SET => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                let count = reader.read_tagged_u64()?;
+                Ok(DeltaRecord::LabelIndexStatsSet { label, count })
+            }
+            legacy_delta::V35_LABEL_INDEX_STATS_CLEAR => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                Ok(DeltaRecord::LabelIndexStatsClear { label })
+            }
+            legacy_delta::V35_LABEL_PROPERTIES_INDEX_STATS_SET => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                let prop = PropertyId::from(reader.read_u64_le()? as u32);
+                let count = reader.read_tagged_u64()?;
+                Ok(DeltaRecord::LabelPropertyIndexStatsSet { label, property: prop, count })
+            }
+            legacy_delta::V35_LABEL_PROPERTIES_INDEX_STATS_CLEAR => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                let prop = PropertyId::from(reader.read_u64_le()? as u32);
+                Ok(DeltaRecord::LabelPropertyIndexStatsClear { label, property: prop })
+            }
+            legacy_delta::V35_EDGE_INDEX_CREATE => {
+                let edge_type = EdgeTypeId::from(reader.read_u64_le()? as u32);
+                Ok(DeltaRecord::EdgeIndexCreate { edge_type })
+            }
+            legacy_delta::V35_EDGE_INDEX_DROP => {
+                let edge_type = EdgeTypeId::from(reader.read_u64_le()? as u32);
+                Ok(DeltaRecord::EdgeIndexDrop { edge_type })
+            }
+            legacy_delta::V35_TEXT_INDEX_CREATE => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                let prop_count = reader.read_tagged_u64()? as usize;
+                let mut properties = Vec::with_capacity(prop_count);
+                for _ in 0..prop_count {
+                    properties.push(PropertyId::from(reader.read_u64_le()? as u32));
+                }
+                Ok(DeltaRecord::TextIndexCreate { label, properties })
+            }
+            legacy_delta::V35_TEXT_INDEX_DROP => {
+                let label = LabelId::from(reader.read_u64_le()? as u32);
+                Ok(DeltaRecord::TextIndexDrop { label })
+            }
+            legacy_delta::V35_TRANSACTION_START => {
+                // v35+ TRANSACTION_START: tagged bool (commit) + tagged u64 (access_type)
+                let _ = reader.read_byte()?; // TYPE_BOOL marker
+                let _ = reader.read_byte()?; // bool value
+                let _ = reader.read_tagged_u64()?; // access_type
+                Ok(DeltaRecord::TransactionStart { timestamp: 0 })
+            }
+            // Other v35 tags: skip payload
+            legacy_delta::V35_ENUM_CREATE
+            | legacy_delta::V35_ENUM_ALTER_ADD
+            | legacy_delta::V35_ENUM_ALTER_UPDATE
+            | legacy_delta::V35_EDGE_PROPERTY_INDEX_CREATE
+            | legacy_delta::V35_EDGE_PROPERTY_INDEX_DROP
+            | legacy_delta::V35_POINT_INDEX_CREATE
+            | legacy_delta::V35_POINT_INDEX_DROP
+            | legacy_delta::V35_TYPE_CONSTRAINT_CREATE
+            | legacy_delta::V35_TYPE_CONSTRAINT_DROP
+            | legacy_delta::V35_VECTOR_INDEX_CREATE
+            | legacy_delta::V35_VECTOR_INDEX_DROP
+            | legacy_delta::V35_GLOBAL_EDGE_PROPERTY_INDEX_CREATE
+            | legacy_delta::V35_GLOBAL_EDGE_PROPERTY_INDEX_DROP
+            | legacy_delta::V35_VECTOR_EDGE_INDEX_CREATE
+            | legacy_delta::V35_TTL_OPERATION
+            | legacy_delta::V35_TEXT_EDGE_INDEX_CREATE
+            | legacy_delta::V35_DESCRIPTION_SET
+            | legacy_delta::V35_DESCRIPTION_DELETE => {
+                Ok(DeltaRecord::TransactionStart { timestamp: 0 })
             }
             other => Err(CppFormatError::Corrupt(format!(
                 "unknown legacy WAL delta tag: 0x{:02x} (version {})",
@@ -1612,6 +1769,8 @@ mod tests {
         }
         // SECTION_ENUMS
         buf.push(marker::SECTION_ENUMS);
+        // Tagged u64 count (matching C++ WriteUint / ReadUint format)
+        buf.push(marker::TYPE_INT);
         buf.extend_from_slice(&1u64.to_le_bytes()); // 1 enum type
         buf.extend_from_slice(&6u64.to_le_bytes()); // "Status" len
         buf.extend_from_slice(b"Status");

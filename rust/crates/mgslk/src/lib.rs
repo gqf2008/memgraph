@@ -22,7 +22,7 @@ pub const SNAPSHOT_MAGIC: &[u8; 4] = b"MGsn";
 pub const WAL_MAGIC: &[u8; 4] = b"MGwl";
 pub const DURABILITY_VERSION: u64 = 100;
 pub const CPP_OLDEST_VERSION: u64 = 14;
-pub const CPP_NEWEST_VERSION: u64 = 34;
+pub const CPP_NEWEST_VERSION: u64 = 35;
 
 pub fn is_cpp_version(v: u64) -> bool {
     (CPP_OLDEST_VERSION..=CPP_NEWEST_VERSION).contains(&v)
